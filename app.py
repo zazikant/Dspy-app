@@ -16,7 +16,7 @@ st.markdown("Turn casual descriptions into ultra-detailed prompts for Flux, SD3,
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    # API Key with Apply button
+    # API Key
     api_key_input = st.text_input(
         "OpenRouter API Key",
         type="password",
@@ -32,9 +32,9 @@ with st.sidebar:
         else:
             st.error("Please enter an API key.")
 
-    # Model Selection - Includes Z-AI GLM-4.5-Air Free
+    # Model Selection (includes Z-AI GLM-4.5-Air Free)
     model_options = {
-        "Google Gemini Flash 1.5 (Fast & Reliable)": "openrouter/google/gemini-flash-1.5:free",
+        "Google Gemini Flash 1.5 (Recommended)": "openrouter/google/gemini-flash-1.5:free",
         "Z-AI GLM-4.5-Air Free": "openrouter/z-ai/glm-4.5-air:free",
         "Meta Llama 3.3 70B": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
         "Qwen3 235B Thinking": "openrouter/qwen/qwen3-235b-thinking:free",
@@ -44,16 +44,11 @@ with st.sidebar:
     selected_model_label = st.selectbox(
         "Select Model",
         options=list(model_options.keys()),
-        index=1,  # Default to Z-AI GLM-4.5-Air Free
-        help="Z-AI GLM-4.5-Air is a strong free model"
+        index=1,   # Default = Z-AI GLM-4.5-Air Free
     )
     
     if selected_model_label == "Custom Model":
-        model_name = st.text_input(
-            "Custom OpenRouter Model Name",
-            value="openrouter/z-ai/glm-4.5-air:free",
-            help="Enter full model ID (e.g. openrouter/z-ai/glm-4.5-air:free)"
-        )
+        model_name = st.text_input("Custom Model Name", value="openrouter/z-ai/glm-4.5-air:free")
     else:
         model_name = model_options[selected_model_label]
 
@@ -61,21 +56,21 @@ with st.sidebar:
         st.success(f"✅ Model set to: {selected_model_label}")
         st.rerun()
 
-    # Reasoning Mode
     module_type = st.selectbox(
         "Reasoning Mode",
         options=["Predict", "ChainOfThought"],
         index=1,
-        help="ChainOfThought usually gives richer results"
+        help="ChainOfThought usually gives better results"
     )
 
-# ====================== DSPy SETUP ======================
-@st.cache_resource(show_spinner="Loading generator...")
-def load_generator(module_type: str, model_name: str):
+# ====================== DSPy SETUP (Thread-Safe) ======================
+@st.cache_resource(show_spinner="Loading DSPy generator...")
+def get_generator(module_type: str, model_name: str):
     if not os.getenv("OPENROUTER_API_KEY"):
-        return None, "No API key provided"
+        return None, "No API key set. Please apply API key first."
 
     try:
+        # Create LM fresh every time (avoids thread configure conflict)
         lm = dspy.LM(
             model_name,
             api_base="https://openrouter.ai/api/v1",
@@ -83,9 +78,8 @@ def load_generator(module_type: str, model_name: str):
             max_tokens=2048,
             temperature=0.75
         )
-        dspy.configure(lm=lm)
 
-        # === YOUR EXACT ORIGINAL SIGNATURE ===
+        # === YOUR EXACT SIGNATURE ===
         class SceneToImagePrompt(dspy.Signature):
             """
             You are an expert image prompt engineer.You are an expert at turning loose, casual, or explicit user directions
@@ -129,16 +123,19 @@ def load_generator(module_type: str, model_name: str):
 
             detailed_prompt: str = dspy.OutputField(desc="Full, optimized image generation prompt")
 
+        # Create module (we use dspy.context later for safety)
         if module_type == "ChainOfThought":
-            return dspy.ChainOfThought(SceneToImagePrompt), None
+            module = dspy.ChainOfThought(SceneToImagePrompt)
         else:
-            return dspy.Predict(SceneToImagePrompt), None
+            module = dspy.Predict(SceneToImagePrompt)
+
+        return module, lm, None   # return module + lm for context usage
 
     except Exception as e:
-        return None, str(e)
+        return None, None, str(e)
 
-# Load generator
-generator, load_error = load_generator(module_type, model_name)
+# Get the cached components
+generator, lm, load_error = get_generator(module_type, model_name)
 
 # ====================== MAIN UI ======================
 st.subheader("Describe your scene")
@@ -150,7 +147,7 @@ user_input = st.text_area(
 
 if st.button("✨ Generate Detailed Prompt", type="primary", use_container_width=True):
     if not os.getenv("OPENROUTER_API_KEY"):
-        st.error("⚠️ Please enter and Apply your OpenRouter API key in the sidebar first.")
+        st.error("⚠️ Please enter and Apply your OpenRouter API key first.")
     elif not user_input.strip():
         st.error("⚠️ Please describe your scene!")
     elif generator is None:
@@ -158,7 +155,9 @@ if st.button("✨ Generate Detailed Prompt", type="primary", use_container_width
     else:
         with st.spinner(f"Generating with {module_type} using {selected_model_label}..."):
             try:
-                result = generator(user_directions=user_input.strip())
+                # Use dspy.context to avoid thread configure error
+                with dspy.context(lm=lm):
+                    result = generator(user_directions=user_input.strip())
                 
                 st.success("✅ Prompt generated successfully!")
                 
@@ -175,4 +174,4 @@ if st.button("✨ Generate Detailed Prompt", type="primary", use_container_width
             except Exception as e:
                 st.error(f"Generation error: {str(e)}")
 
-st.caption("Z-AI GLM-4.5-Air Free is now available • Use Apply buttons after changes")
+st.caption("Z-AI GLM-4.5-Air Free supported • Use Apply buttons after changes")
