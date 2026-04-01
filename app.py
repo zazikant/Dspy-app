@@ -16,40 +16,65 @@ st.markdown("Turn casual descriptions into ultra-detailed prompts for Flux, SD3,
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    # API Key
-    api_key = st.text_input(
+    # API Key with Apply button
+    api_key_input = st.text_input(
         "OpenRouter API Key",
         type="password",
-        help="Enter your OpenRouter API key here."
+        value=os.getenv("OPENROUTER_API_KEY", ""),
+        help="Paste your OpenRouter API key here."
     )
     
-    if api_key:
-        os.environ["OPENROUTER_API_KEY"] = api_key
-        st.success("API Key set ✓")
-    else:
-        st.warning("Enter API key to enable generation.")
+    if st.button("✅ Apply API Key", type="primary", use_container_width=True):
+        if api_key_input.strip():
+            os.environ["OPENROUTER_API_KEY"] = api_key_input.strip()
+            st.success("✅ API Key applied")
+            st.rerun()
+        else:
+            st.error("Please enter an API key.")
 
-    # Model Name Input
-    model_name = st.text_input(
-        "OpenRouter Model Name",
-        value="openai/arcee-ai/trinity-large-preview:free",
-        help="Example: openai/arcee-ai/trinity-large-preview:free or google/gemini-flash-1.5"
+    # Model Selection - Includes Z-AI GLM-4.5-Air Free
+    model_options = {
+        "Google Gemini Flash 1.5 (Fast & Reliable)": "openrouter/google/gemini-flash-1.5:free",
+        "Z-AI GLM-4.5-Air Free": "openrouter/z-ai/glm-4.5-air:free",
+        "Meta Llama 3.3 70B": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
+        "Qwen3 235B Thinking": "openrouter/qwen/qwen3-235b-thinking:free",
+        "Custom Model": "custom"
+    }
+    
+    selected_model_label = st.selectbox(
+        "Select Model",
+        options=list(model_options.keys()),
+        index=1,  # Default to Z-AI GLM-4.5-Air Free
+        help="Z-AI GLM-4.5-Air is a strong free model"
     )
+    
+    if selected_model_label == "Custom Model":
+        model_name = st.text_input(
+            "Custom OpenRouter Model Name",
+            value="openrouter/z-ai/glm-4.5-air:free",
+            help="Enter full model ID (e.g. openrouter/z-ai/glm-4.5-air:free)"
+        )
+    else:
+        model_name = model_options[selected_model_label]
 
-    # Module Type: Predict or ChainOfThought
+    if st.button("✅ Apply Model", type="primary", use_container_width=True):
+        st.success(f"✅ Model set to: {selected_model_label}")
+        st.rerun()
+
+    # Reasoning Mode
     module_type = st.selectbox(
         "Reasoning Mode",
         options=["Predict", "ChainOfThought"],
-        index=1,  # Default to ChainOfThought (better quality)
-        help="ChainOfThought usually gives richer and better prompts"
+        index=1,
+        help="ChainOfThought usually gives richer results"
     )
 
 # ====================== DSPy SETUP ======================
-@st.cache_resource(show_spinner="Loading DSPy generator...")
+@st.cache_resource(show_spinner="Loading generator...")
 def load_generator(module_type: str, model_name: str):
     if not os.getenv("OPENROUTER_API_KEY"):
-        return None
-    
+        return None, "No API key provided"
+
     try:
         lm = dspy.LM(
             model_name,
@@ -60,7 +85,7 @@ def load_generator(module_type: str, model_name: str):
         )
         dspy.configure(lm=lm)
 
-        # === YOUR EXACT SIGNATURE ===
+        # === YOUR EXACT ORIGINAL SIGNATURE ===
         class SceneToImagePrompt(dspy.Signature):
             """
             You are an expert image prompt engineer.You are an expert at turning loose, casual, or explicit user directions
@@ -104,18 +129,16 @@ def load_generator(module_type: str, model_name: str):
 
             detailed_prompt: str = dspy.OutputField(desc="Full, optimized image generation prompt")
 
-        # Choose module based on dropdown
         if module_type == "ChainOfThought":
-            return dspy.ChainOfThought(SceneToImagePrompt)
+            return dspy.ChainOfThought(SceneToImagePrompt), None
         else:
-            return dspy.Predict(SceneToImagePrompt)
+            return dspy.Predict(SceneToImagePrompt), None
 
     except Exception as e:
-        st.error(f"Failed to load model: {e}")
-        return None
+        return None, str(e)
 
-# Load the generator
-generator = load_generator(module_type, model_name)
+# Load generator
+generator, load_error = load_generator(module_type, model_name)
 
 # ====================== MAIN UI ======================
 st.subheader("Describe your scene")
@@ -125,38 +148,31 @@ user_input = st.text_area(
     height=180
 )
 
-col1, col2 = st.columns([3, 1])
-with col1:
-    generate_button = st.button("✨ Generate Detailed Prompt", type="primary", use_container_width=True)
-
-if generate_button:
-    if not api_key:
-        st.error("⚠️ Please enter your OpenRouter API key in the sidebar.")
-    elif not model_name:
-        st.error("⚠️ Please enter a model name.")
+if st.button("✨ Generate Detailed Prompt", type="primary", use_container_width=True):
+    if not os.getenv("OPENROUTER_API_KEY"):
+        st.error("⚠️ Please enter and Apply your OpenRouter API key in the sidebar first.")
     elif not user_input.strip():
-        st.error("⚠️ Please enter a scene description!")
+        st.error("⚠️ Please describe your scene!")
     elif generator is None:
-        st.error("❌ Could not load the generator. Check API key and model name.")
+        st.error(f"❌ Failed to load generator: {load_error}")
     else:
-        with st.spinner(f"Generating with {module_type} using {model_name}..."):
+        with st.spinner(f"Generating with {module_type} using {selected_model_label}..."):
             try:
                 result = generator(user_directions=user_input.strip())
                 
                 st.success("✅ Prompt generated successfully!")
                 
-                st.subheader("📋 Optimized Image Prompt")
+                st.subheader("📋 Your Optimized Image Prompt")
                 st.code(result.detailed_prompt, language=None)
                 
                 st.download_button(
-                    label="⬇️ Download Prompt as .txt",
+                    label="⬇️ Download Prompt",
                     data=result.detailed_prompt,
                     file_name="detailed_image_prompt.txt",
                     mime="text/plain",
                     use_container_width=True
                 )
-                
             except Exception as e:
                 st.error(f"Generation error: {str(e)}")
 
-st.caption("Powered by DSPy + OpenRouter • Change model or mode anytime in sidebar")
+st.caption("Z-AI GLM-4.5-Air Free is now available • Use Apply buttons after changes")
