@@ -25,7 +25,7 @@ if 'last_prompt' not in st.session_state:
 if 'original_input' not in st.session_state:
     st.session_state.original_input = ""
 if 'selected_model_label' not in st.session_state:
-    st.session_state.selected_model_label = "MiniMax M2.5"
+    st.session_state.selected_model_label = "Z-AI GLM-4.5-Air Free"
 
 # ====================== SIDEBAR ======================
 with st.sidebar:
@@ -53,21 +53,22 @@ with st.sidebar:
         "Qwen3.6 Plus Preview (Best overall)": "qwen/qwen3.6-plus-preview:free",
         "Step 3.5 Flash (Fast & strong)": "stepfun/step-3.5-flash:free",
         "Arcee Trinity Large Preview (Creative)": "arcee-ai/trinity-large-preview:free",
-        "GLM 4.5 Air": "z-ai/glm-4.5-air:free",
+        "GLM 4.5 Air (Default)": "z-ai/glm-4.5-air:free",
         "MiniMax M2.5": "minimax/minimax-m2.5:free",
         "Llama 3.3 70B Instruct": "meta-llama/llama-3.3-70b-instruct:free",
-        "Qwen3 Coder 480B": "qwen/qwen3-coder:free",
         "Custom Model": "custom"
     }
 
     selected_model_label = st.selectbox(
         "Select Model",
         options=list(model_options.keys()),
-        index=1,  # MiniMax M2.5 default (as in your version)
+        index=4,   # GLM 4.5 Air as default (index 4)
+        help="GLM 4.5 Air is set as default"
     )
 
     if selected_model_label == "Custom Model":
-        model_name = st.text_input("Custom Model Name", value="openrouter/minimax/minimax-m2.5:free")
+        model_name = st.text_input("Custom Model Name", 
+                                  value="z-ai/glm-4.5-air:free")
     else:
         model_name = model_options[selected_model_label]
 
@@ -88,11 +89,11 @@ with st.sidebar:
 def get_generator(module_type: str, model_name: str):
     if not os.getenv("OPENROUTER_API_KEY"):
         return None, None, "No API key set."
-    
+
     try:
-        # Fix: Prefix with "openrouter/" so LiteLLM correctly routes it
+        # LiteLLM Fix: Always prefix with openrouter/
         full_model = f"openrouter/{model_name}" if not model_name.startswith("openrouter/") else model_name
-        
+
         lm = dspy.LM(
             model=full_model,
             api_base="https://openrouter.ai/api/v1",
@@ -124,17 +125,12 @@ ALWAYS follow these guidelines:
     except Exception as e:
         return None, None, str(e)
 
-# Initialize generator only when Apply Model is clicked or on rerun
-if st.session_state.get('lm') is None or st.session_state.get('generator') is None:
-    if os.getenv("OPENROUTER_API_KEY"):
-        generator, lm, load_error = get_generator(module_type, model_name)
-        st.session_state.generator = generator
-        st.session_state.lm = lm
-        st.session_state.load_error = load_error
-    else:
-        st.session_state.generator = None
-        st.session_state.lm = None
-        st.session_state.load_error = "No API key set."
+# Initialize generator when API key and model are ready
+if os.getenv("OPENROUTER_API_KEY") and st.session_state.generator is None:
+    generator, lm, load_error = get_generator(module_type, model_name)
+    st.session_state.generator = generator
+    st.session_state.lm = lm
+    st.session_state.load_error = load_error
 
 # ====================== MAIN UI ======================
 st.subheader("1. Initial Scene Description")
@@ -158,7 +154,7 @@ with col1:
                 try:
                     with dspy.context(lm=st.session_state.lm):
                         result = st.session_state.generator(user_directions=user_input.strip())
-                    
+
                     st.session_state.original_input = user_input.strip()
                     st.session_state.last_prompt = result.detailed_prompt
                     st.session_state.prompt_history = [{
@@ -166,10 +162,10 @@ with col1:
                         "prompt": result.detailed_prompt,
                         "feedback_used": "Initial generation - no Grok feedback yet"
                     }]
+
                     st.success("✅ v1 ready!")
                     st.code(result.detailed_prompt, language=None)
-                    
-                    # Improved Copy Button
+
                     if st.button("📋 Copy v1 for Grok"):
                         st.clipboard(result.detailed_prompt)
                         st.toast("✅ Copied to clipboard!")
@@ -205,10 +201,13 @@ if st.button("🚀 Generate Next Version with Grok Feedback", type="primary", us
             try:
                 enhanced_input = f"""Original scene description:
 {st.session_state.original_input}
+
 Previous best prompt (v{len(st.session_state.prompt_history)}):
 {st.session_state.last_prompt}
+
 Grok has repeatedly suggested the following improvements across feedback:
 {grok_feedback.strip()}
+
 Create the strongest next version. Incorporate all the valuable patterns and elements Grok has been emphasizing."""
 
                 with dspy.context(lm=st.session_state.lm):
@@ -239,4 +238,4 @@ if st.session_state.prompt_history:
             st.code(item['prompt'], language=None)
             st.caption(f"Based on: {item['feedback_used']}")
 
-st.caption("Updated models (April 2026) + Grok manual refinement • Quality improves with each iteration")
+st.caption("GLM 4.5 Air Free + Grok iterative refinement • Signature unchanged")
