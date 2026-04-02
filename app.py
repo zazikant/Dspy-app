@@ -1,6 +1,7 @@
 import streamlit as st
 import dspy
 import os
+import re
 
 st.set_page_config(
     page_title="Scene → Image Prompt Generator",
@@ -8,12 +9,17 @@ st.set_page_config(
     layout="centered"
 )
 
-st.title("🎨 Scene to Image Prompt Generator")
-st.markdown("Ultra-detailed prompts for Flux / SD3 / SDXL + Grok-powered iterative refinement")
-
 # ====================== SIDEBAR ======================
 with st.sidebar:
     st.header("⚙️ Settings")
+
+    page = st.radio(
+        "Page",
+        ["🎬 Scene → Image Prompt", "🎥 Video Script → Scenes"],
+        label_visibility="collapsed"
+    )
+
+    st.divider()
 
     api_key_input = st.text_input(
         "OpenRouter API Key",
@@ -111,72 +117,78 @@ if 'last_prompt' not in st.session_state:
     st.session_state.last_prompt = ""
 if 'original_input' not in st.session_state:
     st.session_state.original_input = ""
+if 'scene_list' not in st.session_state:
+    st.session_state.scene_list = []
 
-# ====================== MAIN UI ======================
-st.subheader("1. Initial Scene Description")
-user_input = st.text_area(
-    "Your directions:",
-    placeholder="beautiful woman in red lace lingerie, sitting on bed, legs slightly apart, soft warm lighting, low camera angle...",
-    height=140
-)
+# ====================== PAGE 1: Scene → Image Prompt ======================
+if page == "🎬 Scene → Image Prompt":
+    st.title("🎨 Scene to Image Prompt Generator")
+    st.markdown("Ultra-detailed prompts for Flux / SD3 / SDXL + Grok-powered iterative refinement")
 
-col1, col2 = st.columns(2)
-with col1:
-    if st.button("✨ Generate Initial Prompt (v1)", type="primary", use_container_width=True):
-        if not os.getenv("OPENROUTER_API_KEY"):
-            st.error("Please apply OpenRouter API key first.")
-        elif not user_input.strip():
-            st.error("Please describe your scene!")
-        elif generator is None:
-            st.error(f"Generator error: {load_error}")
+    st.subheader("1. Initial Scene Description")
+    user_input = st.text_area(
+        "Your directions:",
+        placeholder="beautiful woman in red lace lingerie, sitting on bed, legs slightly apart, soft warm lighting, low camera angle...",
+        height=140
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✨ Generate Initial Prompt (v1)", type="primary", use_container_width=True):
+            if not os.getenv("OPENROUTER_API_KEY"):
+                st.error("Please apply OpenRouter API key first.")
+            elif not user_input.strip():
+                st.error("Please describe your scene!")
+            elif generator is None:
+                st.error(f"Generator error: {load_error}")
+            else:
+                with st.spinner(f"Generating v1 with {selected_model_label}..."):
+                    try:
+                        with dspy.context(lm=lm):
+                            result = generator(user_directions=user_input.strip())
+
+                        st.session_state.original_input = user_input.strip()
+                        st.session_state.last_prompt = result.detailed_prompt
+                        st.session_state.prompt_history = [{
+                            "version": 1,
+                            "prompt": result.detailed_prompt,
+                            "feedback_used": "Initial generation - no Grok feedback yet"
+                        }]
+
+                        st.success("✅ v1 ready!")
+                        st.code(result.detailed_prompt, language=None)
+
+                        st.button("📋 Copy v1 for Grok", 
+                                 on_click=lambda: st.clipboard(result.detailed_prompt) or st.toast("Copied to clipboard!"))
+                    except Exception as e:
+                        st.error(str(e))
+
+    with col2:
+        if st.button("🔄 Reset Everything", type="secondary", use_container_width=True):
+            st.session_state.prompt_history = []
+            st.session_state.last_prompt = ""
+            st.session_state.original_input = ""
+            st.rerun()
+
+    # ====================== GROK REFINEMENT ======================
+    st.subheader("2. Iterative Refinement with Grok (Manual)")
+    st.markdown("Copy the latest prompt → paste into Grok → ask for improvements → paste Grok's reply here")
+
+    grok_feedback = st.text_area(
+        "Grok's feedback (paste entire response or key suggestions):",
+        placeholder="Grok said: Add more dramatic rim lighting, make the fabric more sheer and clinging, use a lower camera angle, emphasize skin glow and subtle sweat beads...",
+        height=160
+    )
+
+    if st.button("🚀 Generate Next Version with Grok Feedback", type="primary", use_container_width=True):
+        if not st.session_state.last_prompt:
+            st.error("Generate v1 first!")
+        elif not grok_feedback.strip():
+            st.error("Paste Grok feedback first!")
         else:
-            with st.spinner(f"Generating v1 with {selected_model_label}..."):
+            with st.spinner(f"Creating v{len(st.session_state.prompt_history)+1} ..."):
                 try:
-                    with dspy.context(lm=lm):
-                        result = generator(user_directions=user_input.strip())
-
-                    st.session_state.original_input = user_input.strip()
-                    st.session_state.last_prompt = result.detailed_prompt
-                    st.session_state.prompt_history = [{
-                        "version": 1,
-                        "prompt": result.detailed_prompt,
-                        "feedback_used": "Initial generation - no Grok feedback yet"
-                    }]
-
-                    st.success("✅ v1 ready!")
-                    st.code(result.detailed_prompt, language=None)
-
-                    st.button("📋 Copy v1 for Grok", 
-                             on_click=lambda: st.clipboard(result.detailed_prompt) or st.toast("Copied to clipboard!"))
-                except Exception as e:
-                    st.error(str(e))
-
-with col2:
-    if st.button("🔄 Reset Everything", type="secondary", use_container_width=True):
-        st.session_state.prompt_history = []
-        st.session_state.last_prompt = ""
-        st.session_state.original_input = ""
-        st.rerun()
-
-# ====================== GROK REFINEMENT ======================
-st.subheader("2. Iterative Refinement with Grok (Manual)")
-st.markdown("Copy the latest prompt → paste into Grok → ask for improvements → paste Grok’s reply here")
-
-grok_feedback = st.text_area(
-    "Grok's feedback (paste entire response or key suggestions):",
-    placeholder="Grok said: Add more dramatic rim lighting, make the fabric more sheer and clinging, use a lower camera angle, emphasize skin glow and subtle sweat beads...",
-    height=160
-)
-
-if st.button("🚀 Generate Next Version with Grok Feedback", type="primary", use_container_width=True):
-    if not st.session_state.last_prompt:
-        st.error("Generate v1 first!")
-    elif not grok_feedback.strip():
-        st.error("Paste Grok feedback first!")
-    else:
-        with st.spinner(f"Creating v{len(st.session_state.prompt_history)+1} ..."):
-            try:
-                enhanced_input = f"""Original scene description:
+                    enhanced_input = f"""Original scene description:
 {st.session_state.original_input}
 
 Previous best prompt (v{len(st.session_state.prompt_history)}):
@@ -187,31 +199,145 @@ Grok has repeatedly suggested the following improvements across feedback:
 
 Create the strongest next version. Incorporate all the valuable patterns and elements Grok has been emphasizing."""
 
-                with dspy.context(lm=lm):
-                    result = generator(user_directions=enhanced_input)
+                    with dspy.context(lm=lm):
+                        result = generator(user_directions=enhanced_input)
 
-                new_version = len(st.session_state.prompt_history) + 1
-                st.session_state.prompt_history.append({
-                    "version": new_version,
-                    "prompt": result.detailed_prompt,
-                    "feedback_used": grok_feedback.strip()[:300] + "..." 
-                })
-                st.session_state.last_prompt = result.detailed_prompt
+                    new_version = len(st.session_state.prompt_history) + 1
+                    st.session_state.prompt_history.append({
+                        "version": new_version,
+                        "prompt": result.detailed_prompt,
+                        "feedback_used": grok_feedback.strip()[:300] + "..." 
+                    })
+                    st.session_state.last_prompt = result.detailed_prompt
 
-                st.success(f"✅ v{new_version} generated!")
-                st.code(result.detailed_prompt, language=None)
+                    st.success(f"✅ v{new_version} generated!")
+                    st.code(result.detailed_prompt, language=None)
 
-                st.button("📋 Copy v{new_version} for Grok", 
-                         on_click=lambda: st.clipboard(result.detailed_prompt) or st.toast("Copied!"))
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
+                    st.button("📋 Copy v{new_version} for Grok", 
+                             on_click=lambda: st.clipboard(result.detailed_prompt) or st.toast("Copied!"))
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
 
-# ====================== HISTORY ======================
-if st.session_state.prompt_history:
-    st.subheader("📜 Prompt Evolution")
-    for item in reversed(st.session_state.prompt_history):
-        with st.expander(f"Version {item['version']}"):
-            st.code(item['prompt'], language=None)
-            st.caption(f"Based on: {item['feedback_used']}")
+    # ====================== HISTORY ======================
+    if st.session_state.prompt_history:
+        st.subheader("📜 Prompt Evolution")
+        for item in reversed(st.session_state.prompt_history):
+            with st.expander(f"Version {item['version']}"):
+                st.code(item['prompt'], language=None)
+                st.caption(f"Based on: {item['feedback_used']}")
 
-st.caption("MiniMax M2.5 Free + Grok manual refinement • Signature stays constant • Quality compounds with each Grok dump")
+    st.caption("MiniMax M2.5 Free + Grok manual refinement • Signature stays constant • Quality compounds with each Grok dump")
+
+
+# ====================== PAGE 2: Video Script → Scenes ======================
+elif page == "🎥 Video Script → Scenes":
+    st.title("🎥 Video Script → Scene Prompts")
+    st.markdown(
+        "Break a video script into individual scene prompts — "
+        "each ready to drop into **Scene → Image Prompt** as your starting description."
+    )
+
+    @st.cache_resource(show_spinner="Loading scene breaker...")
+    def get_scene_breaker(model_name: str):
+        if not os.getenv("OPENROUTER_API_KEY"):
+            return None, None, "No API key set."
+        try:
+            lm2 = dspy.LM(
+                model_name,
+                api_base="https://openrouter.ai/api/v1",
+                api_key=os.getenv("OPENROUTER_API_KEY"),
+                max_tokens=2048,
+                temperature=0.5
+            )
+
+            class VideoScriptToScenePrompts(dspy.Signature):
+                """
+                You are an expert at analyzing video scripts and breaking them into distinct visual scenes.
+                For each scene, write a concise, self-contained image prompt (20-40 words) capturing:
+                - Setting and environment
+                - Subjects and their action or pose
+                - Mood and atmosphere
+                - Lighting style
+                Each prompt must be ready to paste directly into an image generation tool like Flux or SDXL.
+                You MUST output each scene on its own line, numbered like: 1. [prompt]
+                Output ONLY the numbered list — no headers, no extra text, no blank lines between items.
+                """
+                video_script: str = dspy.InputField(
+                    desc="Full video script text to be broken down into distinct visual scenes"
+                )
+                scene_prompts: str = dspy.OutputField(
+                    desc="Numbered list, one scene per line. Example: 1. wide shot of... 2. close-up of..."
+                )
+
+            module2 = dspy.Predict(VideoScriptToScenePrompts)
+            return module2, lm2, None
+        except Exception as e:
+            return None, None, str(e)
+
+    scene_module, lm2, scene_error = get_scene_breaker(model_name)
+
+    video_script = st.text_area(
+        "Paste your video script:",
+        placeholder=(
+            "Scene 1: The camera opens on a dimly lit penthouse at dusk...\n"
+            "Scene 2: She walks toward the floor-to-ceiling window, silhouetted by city lights...\n"
+            "Scene 3: Close-up on her hand tracing the condensation on a glass..."
+        ),
+        height=300
+    )
+
+    if st.button("🎬 Break Into Scene Prompts", type="primary", use_container_width=True):
+        if not os.getenv("OPENROUTER_API_KEY"):
+            st.error("Please apply OpenRouter API key first.")
+        elif not video_script.strip():
+            st.error("Please paste a video script!")
+        elif scene_module is None:
+            st.error(f"Error: {scene_error}")
+        else:
+            with st.spinner(f"Analyzing script with {selected_model_label}..."):
+                try:
+                    with dspy.context(lm=lm2):
+                        result = scene_module(video_script=video_script.strip())
+
+                    raw = result.scene_prompts.strip()
+
+                    # Strategy 1: split by newlines, strip leading numbers
+                    lines = [l.strip() for l in raw.split("\n") if l.strip()]
+                    scenes = []
+                    for line in lines:
+                        cleaned = re.sub(r"^\d+[\.\)\-\:]\s*", "", line).strip()
+                        if cleaned:
+                            scenes.append(cleaned)
+
+                    # Strategy 2: if nothing via newlines, split inline by "N. " pattern
+                    if not scenes:
+                        parts = re.split(r"\d+[\.\)]\s+", raw)
+                        scenes = [p.strip() for p in parts if p.strip()]
+
+                    # Strategy 3: fall back to whole output as one scene
+                    if not scenes and raw:
+                        scenes = [raw]
+
+                    st.session_state.scene_list = scenes
+                    st.success(f"✅ Found {len(scenes)} scenes!")
+                except Exception as e:
+                    st.error(str(e))
+
+    if st.session_state.scene_list:
+        st.subheader(f"📋 {len(st.session_state.scene_list)} Scene Prompts")
+        st.markdown(
+            "Copy any prompt → switch to **Scene → Image Prompt** → "
+            "paste as your scene description → generate a full detailed prompt."
+        )
+        for i, scene in enumerate(st.session_state.scene_list, 1):
+            with st.expander(f"Scene {i}", expanded=True):
+                st.code(scene, language=None)
+
+        if st.button("🔄 Clear Scenes", type="secondary", use_container_width=True):
+            st.session_state.scene_list = []
+            st.rerun()
+
+    st.caption(
+        "Free models via OpenRouter • Scene prompts are 20-40 words — "
+        "seed them into Scene → Image Prompt for full 80-200 word detail"
+    )
