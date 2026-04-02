@@ -14,14 +14,14 @@ st.markdown("Ultra-detailed prompts for Flux / SD3 / SDXL + Grok-powered iterati
 # ====================== SIDEBAR ======================
 with st.sidebar:
     st.header("⚙️ Settings")
-    
+
     api_key_input = st.text_input(
         "OpenRouter API Key",
         type="password",
         value=os.getenv("OPENROUTER_API_KEY", ""),
         help="Paste your OpenRouter API key here."
     )
-    
+
     if st.button("✅ Apply API Key", type="primary", use_container_width=True):
         if api_key_input.strip():
             os.environ["OPENROUTER_API_KEY"] = api_key_input.strip()
@@ -31,11 +31,10 @@ with st.sidebar:
             st.error("Please enter an API key.")
 
     model_options = {
-        "🔥 Smart Free Router (Recommended)": "openrouter/openrouter/free",
         "Qwen3.6 Plus Preview (Best overall)": "openrouter/qwen/qwen3.6-plus-preview:free",
+        "GLM 4.5 Air (Default)": "openrouter/z-ai/glm-4.5-air:free",        
         "Step 3.5 Flash (Fast & strong)": "openrouter/stepfun/step-3.5-flash:free",
-        "Arcee Trinity Large Preview (Creative)": "openrouter/arcee-ai/trinity-large-preview:free",
-        "GLM 4.5 Air (Default)": "openrouter/z-ai/glm-4.5-air:free",
+        "Arcee Trinity Large Preview (Creative)": "openrouter/arcee-ai/trinity-large-preview:free",        
         "MiniMax M2.5": "openrouter/minimax/minimax-m2.5:free",
         "Llama 3.3 70B Instruct": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
         "Custom Model": "custom"
@@ -44,12 +43,11 @@ with st.sidebar:
     selected_model_label = st.selectbox(
         "Select Model",
         options=list(model_options.keys()),
-        index=4,  # GLM 4.5 Air remains default
+        index=1,   # GLM 4.5 Air
     )
 
     if selected_model_label == "Custom Model":
-        model_name = st.text_input("Custom Model Name (with openrouter/ prefix)", 
-                                  value="openrouter/z-ai/glm-4.5-air:free")
+        model_name = st.text_input("Custom Model Name", value="openrouter/z-ai/glm-4.5-air:free")
     else:
         model_name = model_options[selected_model_label]
 
@@ -69,9 +67,8 @@ with st.sidebar:
 def get_generator(module_type: str, model_name: str):
     if not os.getenv("OPENROUTER_API_KEY"):
         return None, None, "No API key set."
-    
+
     try:
-        # Important: Always use the full openrouter/ prefix for LiteLLM compatibility
         lm = dspy.LM(
             model_name,
             api_base="https://openrouter.ai/api/v1",
@@ -79,10 +76,11 @@ def get_generator(module_type: str, model_name: str):
             max_tokens=2048,
             temperature=0.7
         )
-        
+
         class SceneToImagePrompt(dspy.Signature):
             """
             You are an expert image prompt engineer specializing in turning loose or explicit user directions into ultra-detailed, vivid, high-quality prompts for Flux, SD3, SDXL, Pony, etc.
+
 ALWAYS follow these guidelines:
             - Strong cinematic composition and camera angles
             - Rich pose, body language, and clothing details (especially sheer/translucent fabrics)
@@ -92,13 +90,14 @@ ALWAYS follow these guidelines:
             - Output a ready-to-use, well-structured detailed prompt (80-200 words)
             """
             user_directions: str = dspy.InputField(desc="Original scene + previous prompt + all Grok feedback accumulated")
+
             detailed_prompt: str = dspy.OutputField(desc="Final optimized image generation prompt")
 
         if module_type == "ChainOfThought":
             module = dspy.ChainOfThought(SceneToImagePrompt)
         else:
             module = dspy.Predict(SceneToImagePrompt)
-            
+
         return module, lm, None
     except Exception as e:
         return None, None, str(e)
@@ -135,6 +134,7 @@ with col1:
                 try:
                     with dspy.context(lm=lm):
                         result = generator(user_directions=user_input.strip())
+
                     st.session_state.original_input = user_input.strip()
                     st.session_state.last_prompt = result.detailed_prompt
                     st.session_state.prompt_history = [{
@@ -142,11 +142,12 @@ with col1:
                         "prompt": result.detailed_prompt,
                         "feedback_used": "Initial generation - no Grok feedback yet"
                     }]
+
                     st.success("✅ v1 ready!")
                     st.code(result.detailed_prompt, language=None)
-                    if st.button("📋 Copy v1 for Grok"):
-                        st.clipboard(result.detailed_prompt)
-                        st.toast("Copied to clipboard!")
+
+                    st.button("📋 Copy v1 for Grok", 
+                             on_click=lambda: st.clipboard(result.detailed_prompt) or st.toast("Copied to clipboard!"))
                 except Exception as e:
                     st.error(str(e))
 
@@ -177,10 +178,13 @@ if st.button("🚀 Generate Next Version with Grok Feedback", type="primary", us
             try:
                 enhanced_input = f"""Original scene description:
 {st.session_state.original_input}
+
 Previous best prompt (v{len(st.session_state.prompt_history)}):
 {st.session_state.last_prompt}
+
 Grok has repeatedly suggested the following improvements across feedback:
 {grok_feedback.strip()}
+
 Create the strongest next version. Incorporate all the valuable patterns and elements Grok has been emphasizing."""
 
                 with dspy.context(lm=lm):
@@ -190,15 +194,15 @@ Create the strongest next version. Incorporate all the valuable patterns and ele
                 st.session_state.prompt_history.append({
                     "version": new_version,
                     "prompt": result.detailed_prompt,
-                    "feedback_used": grok_feedback.strip()[:300] + "..."
+                    "feedback_used": grok_feedback.strip()[:300] + "..." 
                 })
                 st.session_state.last_prompt = result.detailed_prompt
+
                 st.success(f"✅ v{new_version} generated!")
                 st.code(result.detailed_prompt, language=None)
-                
-                if st.button(f"📋 Copy v{new_version} for Grok"):
-                    st.clipboard(result.detailed_prompt)
-                    st.toast("Copied!")
+
+                st.button("📋 Copy v{new_version} for Grok", 
+                         on_click=lambda: st.clipboard(result.detailed_prompt) or st.toast("Copied!"))
             except Exception as e:
                 st.error(f"Error: {str(e)}")
 
@@ -210,4 +214,4 @@ if st.session_state.prompt_history:
             st.code(item['prompt'], language=None)
             st.caption(f"Based on: {item['feedback_used']}")
 
-st.caption("GLM 4.5 Air (Default) via OpenRouter • Grok manual refinement • Quality improves with each iteration")
+st.caption("MiniMax M2.5 Free + Grok manual refinement • Signature stays constant • Quality compounds with each Grok dump")
