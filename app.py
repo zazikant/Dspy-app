@@ -88,9 +88,13 @@ with st.sidebar:
 def get_generator(module_type: str, model_name: str):
     if not os.getenv("OPENROUTER_API_KEY"):
         return None, None, "No API key set."
+    
     try:
+        # Fix: Prefix with "openrouter/" so LiteLLM correctly routes it
+        full_model = f"openrouter/{model_name}" if not model_name.startswith("openrouter/") else model_name
+        
         lm = dspy.LM(
-            model_name,
+            model=full_model,
             api_base="https://openrouter.ai/api/v1",
             api_key=os.getenv("OPENROUTER_API_KEY"),
             max_tokens=2048,
