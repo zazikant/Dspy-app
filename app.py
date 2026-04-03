@@ -83,7 +83,7 @@ elif is_prd_mode:
     st.title("🧠 Software PRD Meta-Prompt Generator")
     st.markdown(
         "Converge on a bulletproof technical architecture through iterative Grok refinement — "
-        "each round reinforces the strongest patterns until the stack, workflow, and data model are locked in."
+        "each round locks in confirmed patterns and buries dead weight permanently."
     )
 else:
     st.title("🎨 Scene to Image Prompt Generator")
@@ -150,7 +150,23 @@ ALWAYS follow these guidelines:
                 """
                 You are a senior software architect and technical product strategist. Your job is to take a raw feature idea or problem statement and produce a comprehensive, opinionated PRD meta-prompt — a living technical document that sharpens itself with every round of expert feedback.
 
-Think like someone who has seen every naive approach fail and every clever pattern succeed. Be decisive. Name the architecture. Commit to the stack. Call out the anti-patterns.
+Think like someone who has seen every naive approach fail and every clever pattern succeed. Be decisive. Name the architecture. Commit to the stack. Call out the anti-patterns. And crucially: be willing to KILL components that don't survive scrutiny.
+
+THE THREE MARKERS — use them rigorously on every component, tool, and decision:
+
+  ✅ CONFIRMED ARCHITECTURE
+     — This pattern/component has been reinforced across multiple Grok rounds. It is locked in.
+       Never remove or question it in future versions. Build on it.
+
+  ⚠️ CHALLENGED
+     — Grok has questioned this component but hasn't killed it yet. It must be explicitly
+       justified with a concrete reason in this version, or promoted to ❌ REMOVED.
+       A ⚠️ CHALLENGED item that cannot be justified this round becomes ❌ REMOVED next round.
+
+  ❌ REMOVED
+     — Grok has repeatedly challenged this and it has failed to justify its existence.
+       Move it immediately to the ARCHITECTURE GRAVEYARD. It must NEVER reappear in any
+       future section of the PRD. Do not soften this — dead weight stays buried.
 
 ALWAYS structure your output as a complete PRD meta-prompt covering ALL of the following sections:
 
@@ -158,19 +174,18 @@ ALWAYS structure your output as a complete PRD meta-prompt covering ALL of the f
    - Crisp one-paragraph definition of what is being solved and why naive approaches break down
 
 2. CORE ARCHITECTURE DECISION
-   - Name the primary architectural pattern chosen (e.g. event-driven pipeline, query chain, agent loop, CQRS, etc.)
-   - State WHY this pattern wins over the alternatives that were considered
-   - Call out any pattern that must be explicitly avoided and why
+   - Name the primary architectural pattern chosen — mark it ✅ CONFIRMED if reinforced
+   - State WHY this pattern wins over the alternatives considered
+   - Explicitly name patterns that are ❌ REMOVED and must never return
 
 3. TECH STACK & TOOLING
-   - Backend: language, framework, key libraries
-   - Data layer: database type, ORM/query strategy, caching approach
-   - Integrations: APIs, queues, external services
-   - Infrastructure: deployment, observability
+   - Every component must carry exactly one marker: ✅ CONFIRMED, ⚠️ CHALLENGED, or ❌ REMOVED
+   - ⚠️ CHALLENGED components must include a one-line justification or be killed this round
+   - ❌ REMOVED components must not appear here — they go only in the Graveyard
 
 4. DATA MODEL & FLOW
    - Key entities and their relationships
-   - How data moves through the system end-to-end (ingestion → processing → storage → retrieval)
+   - How data moves through the system end-to-end
    - Any transformation or enrichment steps
 
 5. WORKFLOW & SEQUENCE
@@ -179,24 +194,36 @@ ALWAYS structure your output as a complete PRD meta-prompt covering ALL of the f
    - State management approach
 
 6. INTERFACE CONTRACTS
-   - API shape (REST / GraphQL / RPC) with key endpoints or function signatures
+   - API shape with key endpoints or function signatures — mark any ⚠️ CHALLENGED
    - Input validation strategy
    - Response structure and error codes
 
 7. OPEN QUESTIONS & NEXT REFINEMENT TARGETS
    - What is still unresolved
-   - Which decisions Grok should stress-test next
+   - Which ⚠️ CHALLENGED decisions Grok should stress-test next
    - Hypotheses worth challenging
 
-TONE: Opinionated, specific, architect-grade. No vague platitudes. Every sentence should either name something concrete or make a decision. When Grok feedback has reinforced a pattern across multiple rounds, mark it ✅ CONFIRMED ARCHITECTURE — this signals it has survived scrutiny and is locked in.
+8. ARCHITECTURE GRAVEYARD
+   - Every component ever marked ❌ REMOVED, listed with a one-line reason why it was killed
+   - This section only ever grows — nothing leaves the Graveyard
+   - Format: "❌ [Component name] — [reason killed]"
+   - If no components have been removed yet, write: "No casualties yet — first round."
 
-Output the full PRD meta-prompt as a well-structured document (200-500 words). It must be immediately usable as context for a developer or for the next Grok refinement round.
+RULES:
+- A leaner PRD that makes fewer decisions confidently beats a bloated one that lists every option
+- If Grok challenged something and you cannot justify it in one concrete sentence, kill it
+- Every version must have FEWER ⚠️ CHALLENGED items than the previous version
+- The Graveyard must grow with each Grok round or you are not being decisive enough
+- Output the full PRD meta-prompt as a well-structured document (250-600 words)
+- It must be immediately usable as context for a developer or the next Grok refinement round
+
+TONE: Opinionated, specific, architect-grade. No vague platitudes. Every sentence either names something concrete or makes a decision.
                 """
                 user_directions: str = dspy.InputField(
                     desc="Original feature/problem description + previous PRD meta-prompt + all Grok architectural feedback accumulated across rounds"
                 )
                 detailed_prompt: str = dspy.OutputField(
-                    desc="Full PRD meta-prompt: architecture decisions, tech stack, data model, workflow, interface contracts, and open questions — sharpened by all Grok feedback so far"
+                    desc="Full PRD meta-prompt with ✅ CONFIRMED / ⚠️ CHALLENGED / ❌ REMOVED markers on every component, plus Architecture Graveyard section"
                 )
 
             sig = SoftwareToPRDPrompt
@@ -213,7 +240,6 @@ Output the full PRD meta-prompt as a well-structured document (200-500 words). I
 generator, lm, load_error = get_generator(module_type, model_name, mode)
 
 # ====================== SESSION STATE ======================
-# Separate history per mode so switching never mixes them
 img_state = st.session_state.setdefault("img", {"prompt_history": [], "last_prompt": "", "original_input": ""})
 vid_state = st.session_state.setdefault("vid", {"prompt_history": [], "last_prompt": "", "original_input": ""})
 prd_state = st.session_state.setdefault("prd", {"prompt_history": [], "last_prompt": "", "original_input": ""})
@@ -229,10 +255,9 @@ else:
 if is_prd_mode:
     st.subheader("1. Describe Your Software Feature or Problem")
     st.markdown(
-        "Write what you're trying to build — as rough or as detailed as you like. "
-        "The generator will produce an opinionated PRD meta-prompt with full architecture, "
-        "stack, data model, and workflow. Then paste it into Grok for critique. "
-        "Each round locks in the patterns Grok keeps reinforcing — marked ✅ CONFIRMED ARCHITECTURE."
+        "Write what you're trying to build. The generator produces an opinionated PRD with full architecture, "
+        "stack, data model, and workflow — with every component marked ✅ / ⚠️ / ❌. "
+        "Each Grok round locks in survivors and buries the rest in the **Architecture Graveyard** permanently."
     )
 else:
     st.subheader("1. Initial Scene Description")
@@ -263,8 +288,7 @@ with col1:
         elif generator is None:
             st.error(f"Generator error: {load_error}")
         else:
-            spinner_msg = f"Generating v1 with {selected_model_label}..."
-            with st.spinner(spinner_msg):
+            with st.spinner(f"Generating v1 with {selected_model_label}..."):
                 try:
                     with dspy.context(lm=lm):
                         result = generator(user_directions=user_input.strip())
@@ -302,9 +326,9 @@ st.subheader("2. Iterative Refinement with Grok (Manual)")
 
 if is_prd_mode:
     st.markdown(
-        "Paste the PRD meta-prompt into Grok → ask it to critique the architecture, suggest better patterns, "
-        "challenge tech choices → paste Grok's full reply here. "
-        "The generator will absorb all feedback and promote repeatedly-confirmed decisions to ✅ CONFIRMED ARCHITECTURE."
+        "Paste the PRD into Grok → ask it to challenge every ⚠️ CHALLENGED component, "
+        "suggest what should be ❌ REMOVED, and reinforce what deserves ✅ CONFIRMED → paste reply here. "
+        "The Graveyard grows. The stack gets leaner. Confidence compounds."
     )
 else:
     st.markdown("Copy the latest prompt → paste into Grok → ask for improvements → paste Grok's reply here")
@@ -313,10 +337,9 @@ placeholder_feedback_map = {
     "🎨 Image Prompt": "Grok said: Add more dramatic rim lighting, make the fabric more sheer and clinging, use a lower camera angle, emphasize skin glow and subtle sweat beads...",
     "🎬 Video Scene Prompt": "Grok said: Add a slow rack focus from foreground rain to her face, extend the dolly move, add breath mist in cold air...",
     "🧠 Software PRD Prompt": (
-        "Grok said: Ditch the raw SQL generation approach — use a SQL Query Chain (LangChain) instead so each sub-question is decomposed, "
-        "validated, and executed independently before results are merged. Add a semantic caching layer (Redis + vector similarity) "
-        "so repeated conceptually-similar questions bypass the LLM entirely. Schema introspection should happen once at startup and be stored "
-        "in a structured context object passed into every chain call, not re-fetched per query..."
+        "Grok said: FastAPI is dead weight — this is Streamlit-only, kill it. Redis + SQLite is over-engineering for a "
+        "demo-scale app, replace with in-memory state + simple JSON persistence. spaCy+transformers adds no value over "
+        "a well-prompted LLM for contact extraction — remove it. Confirm LangGraph + LlamaParse + Pydantic structured output as the core..."
     )
 }
 
@@ -343,10 +366,16 @@ if st.button(refine_label, type="primary", use_container_width=True):
 Previous PRD meta-prompt (v{len(state['prompt_history'])}):
 {state['last_prompt']}
 
-Grok's architectural feedback and suggestions (absorb ALL of this — promote repeatedly-confirmed patterns to ✅ CONFIRMED ARCHITECTURE):
+Grok's architectural feedback (apply ALL of this decisively):
 {grok_feedback.strip()}
 
-Produce the strongest next version of the PRD meta-prompt. Lock in every pattern Grok has reinforced. Sharpen open questions. Replace any section that Grok challenged with the superior approach it suggested."""
+INSTRUCTIONS FOR THIS VERSION:
+- Promote every pattern Grok reinforced to ✅ CONFIRMED ARCHITECTURE
+- Move every component Grok challenged to ⚠️ CHALLENGED — justify it in one sentence or kill it
+- Move every component Grok killed to ❌ REMOVED and add it to the Architecture Graveyard with a reason
+- The Graveyard must be larger than the previous version's Graveyard
+- Every ⚠️ CHALLENGED item from the previous version must either be confirmed or removed — none can remain ⚠️ without a stronger justification
+- The overall stack must be LEANER than v{len(state['prompt_history'])}"""
                 else:
                     enhanced_input = f"""Original scene description:
 {state['original_input']}
@@ -389,8 +418,8 @@ if state["prompt_history"]:
 
     if is_prd_mode:
         st.caption(
-            "Each version absorbs more Grok critique. Decisions marked ✅ CONFIRMED ARCHITECTURE "
-            "have survived multiple rounds of challenge — treat them as locked."
+            "✅ = locked in | ⚠️ = on trial | ❌ = buried in Graveyard. "
+            "Each version must be leaner than the last."
         )
 
     for item in reversed(state["prompt_history"]):
@@ -404,9 +433,9 @@ if state["prompt_history"]:
 mode_label_map = {
     "🎨 Image Prompt": "Image (Flux/SD3/SDXL)",
     "🎬 Video Scene Prompt": "Video (Sora/Kling/Runway)",
-    "🧠 Software PRD Prompt": "PRD (Architecture → Confirmed Stack)"
+    "🧠 Software PRD Prompt": "PRD — ✅ locks in · ⚠️ on trial · ❌ buried"
 }
 st.caption(
     f"Mode: {mode_label_map[mode]} • {selected_model_label} + Grok manual refinement • "
-    "Signature stays constant • Confidence compounds with each Grok dump"
+    "Graveyard only grows · Stack only shrinks · Confidence compounds"
 )
