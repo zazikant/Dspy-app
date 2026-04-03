@@ -12,7 +12,6 @@ st.set_page_config(
 with st.sidebar:
     st.header("⚙️ Settings")
 
-    # ── Mode Toggle ────────────────────────────────────
     st.markdown("### 🎛️ Prompt Mode")
     mode = st.radio(
         label="Select mode:",
@@ -22,7 +21,6 @@ with st.sidebar:
         help="Switch between Image, Video, or PRD prompt generation. Same Grok refinement workflow throughout."
     )
     st.divider()
-    # ───────────────────────────────────────────────────
 
     api_key_input = st.text_input(
         "OpenRouter API Key",
@@ -190,8 +188,9 @@ ALWAYS structure your output as a complete PRD meta-prompt covering ALL of the f
 
 5. WORKFLOW & SEQUENCE
    - Step-by-step operational flow a developer would implement
+   - Name every LangGraph node explicitly with edges (e.g. pdf_loader → ocr_detector → text_extractor → llm_extractor → validator → formatter)
+   - Define the LangGraph state object fields (TypedDict)
    - Decision points, branching logic, error handling strategy
-   - State management approach
 
 6. INTERFACE CONTRACTS
    - API shape with key endpoints or function signatures — mark any ⚠️ CHALLENGED
@@ -218,12 +217,17 @@ RULES:
 - It must be immediately usable as context for a developer or the next Grok refinement round
 
 TONE: Opinionated, specific, architect-grade. No vague platitudes. Every sentence either names something concrete or makes a decision.
+
+CRITICAL: You MUST always return the full PRD document. Never return None, empty string, or partial output.
+If the input contains ratings, scores, or review-style feedback mixed with architectural suggestions,
+extract ONLY the architectural suggestions and apply them. Ignore scores, praise, and meta-commentary.
+Focus solely on: what to add, what to kill, what to confirm, what to challenge.
                 """
                 user_directions: str = dspy.InputField(
-                    desc="Original feature/problem description + previous PRD meta-prompt + all Grok architectural feedback accumulated across rounds"
+                    desc="Original feature/problem description + previous PRD meta-prompt + architectural feedback from Grok. NOTE: extract only architectural decisions from the feedback — ignore any ratings, scores, or review commentary."
                 )
                 detailed_prompt: str = dspy.OutputField(
-                    desc="Full PRD meta-prompt with ✅ CONFIRMED / ⚠️ CHALLENGED / ❌ REMOVED markers on every component, plus Architecture Graveyard section"
+                    desc="Full PRD meta-prompt with ✅ CONFIRMED / ⚠️ CHALLENGED / ❌ REMOVED markers on every component, plus Architecture Graveyard. Must never be empty or None."
                 )
 
             sig = SoftwareToPRDPrompt
@@ -250,6 +254,18 @@ elif is_video_mode:
     state = vid_state
 else:
     state = img_state
+
+# ====================== HELPER ======================
+def is_valid_output(text):
+    """Guard against None, empty, or suspiciously short output."""
+    return text and isinstance(text, str) and len(text.strip()) > 100
+
+def render_output(text, is_prd):
+    """Render output in correct format per mode."""
+    if is_prd:
+        st.markdown(text)
+    else:
+        st.code(text, language=None)
 
 # ====================== MAIN UI ======================
 if is_prd_mode:
@@ -293,24 +309,27 @@ with col1:
                     with dspy.context(lm=lm):
                         result = generator(user_directions=user_input.strip())
 
-                    state["original_input"] = user_input.strip()
-                    state["last_prompt"] = result.detailed_prompt
-                    state["prompt_history"] = [{
-                        "version": 1,
-                        "prompt": result.detailed_prompt,
-                        "feedback_used": "Initial generation — no Grok feedback yet"
-                    }]
+                    output = result.detailed_prompt
 
-                    st.success("✅ v1 ready!")
-                    if is_prd_mode:
-                        st.markdown(result.detailed_prompt)
+                    if not is_valid_output(output):
+                        st.error(
+                            "⚠️ The model returned an empty or invalid response. "
+                            "Try switching to ChainOfThought mode in the sidebar, or try a different model."
+                        )
                     else:
-                        st.code(result.detailed_prompt, language=None)
-
-                    st.button(
-                        "📋 Copy v1 for Grok",
-                        on_click=lambda: st.clipboard(result.detailed_prompt) or st.toast("Copied to clipboard!")
-                    )
+                        state["original_input"] = user_input.strip()
+                        state["last_prompt"] = output
+                        state["prompt_history"] = [{
+                            "version": 1,
+                            "prompt": output,
+                            "feedback_used": "Initial generation — no Grok feedback yet"
+                        }]
+                        st.success("✅ v1 ready!")
+                        render_output(output, is_prd_mode)
+                        st.button(
+                            "📋 Copy v1 for Grok",
+                            on_click=lambda: st.clipboard(output) or st.toast("Copied to clipboard!")
+                        )
                 except Exception as e:
                     st.error(str(e))
 
@@ -327,8 +346,13 @@ st.subheader("2. Iterative Refinement with Grok (Manual)")
 if is_prd_mode:
     st.markdown(
         "Paste the PRD into Grok → ask it to challenge every ⚠️ CHALLENGED component, "
-        "suggest what should be ❌ REMOVED, and reinforce what deserves ✅ CONFIRMED → paste reply here. "
-        "The Graveyard grows. The stack gets leaner. Confidence compounds."
+        "suggest what should be ❌ REMOVED, and reinforce what deserves ✅ CONFIRMED → paste reply here."
+    )
+    st.info(
+        "💡 **Paste architectural feedback only** — what to add, kill, confirm, or challenge. "
+        "Strip out any ratings, scores, or review commentary before pasting. "
+        "The generator ignores scores and only acts on architectural decisions.",
+        icon="ℹ️"
     )
 else:
     st.markdown("Copy the latest prompt → paste into Grok → ask for improvements → paste Grok's reply here")
@@ -337,14 +361,19 @@ placeholder_feedback_map = {
     "🎨 Image Prompt": "Grok said: Add more dramatic rim lighting, make the fabric more sheer and clinging, use a lower camera angle, emphasize skin glow and subtle sweat beads...",
     "🎬 Video Scene Prompt": "Grok said: Add a slow rack focus from foreground rain to her face, extend the dolly move, add breath mist in cold air...",
     "🧠 Software PRD Prompt": (
-        "Grok said: FastAPI is dead weight — this is Streamlit-only, kill it. Redis + SQLite is over-engineering for a "
-        "demo-scale app, replace with in-memory state + simple JSON persistence. spaCy+transformers adds no value over "
-        "a well-prompted LLM for contact extraction — remove it. Confirm LangGraph + LlamaParse + Pydantic structured output as the core..."
+        "Architectural feedback to apply:\n"
+        "- KILL spaCy and Transformers — LLM handles extraction better, move to Graveyard\n"
+        "- KILL PyPDF2 — abandoned, pdfplumber wins, confirm it\n"
+        "- CONFIRM LangGraph as orchestrator\n"
+        "- CONFIRM GPT-4o-mini + Pydantic structured output as extraction core\n"
+        "- Name the LangGraph nodes explicitly: pdf_loader → ocr_detector → text_extractor → llm_extractor → validator → formatter\n"
+        "- Add OCR fallback branch for scanned PDFs using pdf2image + Tesseract\n"
+        "- Define the state TypedDict fields between nodes"
     )
 }
 
 grok_feedback = st.text_area(
-    "Grok's feedback (paste entire response or key suggestions):",
+    "Grok's feedback (architectural suggestions only — strip ratings/scores):" if is_prd_mode else "Grok's feedback (paste entire response or key suggestions):",
     placeholder=placeholder_feedback_map[mode],
     height=180 if is_prd_mode else 160
 )
@@ -366,16 +395,17 @@ if st.button(refine_label, type="primary", use_container_width=True):
 Previous PRD meta-prompt (v{len(state['prompt_history'])}):
 {state['last_prompt']}
 
-Grok's architectural feedback (apply ALL of this decisively):
+Architectural feedback to apply (extract ONLY the architectural decisions below — ignore any ratings, scores, or review-style commentary):
 {grok_feedback.strip()}
 
 INSTRUCTIONS FOR THIS VERSION:
-- Promote every pattern Grok reinforced to ✅ CONFIRMED ARCHITECTURE
-- Move every component Grok challenged to ⚠️ CHALLENGED — justify it in one sentence or kill it
-- Move every component Grok killed to ❌ REMOVED and add it to the Architecture Graveyard with a reason
+- Promote every pattern the feedback reinforced to ✅ CONFIRMED ARCHITECTURE
+- Move every component the feedback challenged to ⚠️ CHALLENGED — justify in one sentence or kill it
+- Move every component the feedback killed to ❌ REMOVED and add it to the Architecture Graveyard with a reason
 - The Graveyard must be larger than the previous version's Graveyard
-- Every ⚠️ CHALLENGED item from the previous version must either be confirmed or removed — none can remain ⚠️ without a stronger justification
-- The overall stack must be LEANER than v{len(state['prompt_history'])}"""
+- Every ⚠️ CHALLENGED item from the previous version must either be confirmed or removed — none survive unchanged
+- The overall stack must be LEANER than v{len(state['prompt_history'])}
+- Return the COMPLETE PRD document. Never return partial output or None."""
                 else:
                     enhanced_input = f"""Original scene description:
 {state['original_input']}
@@ -391,23 +421,29 @@ Create the strongest next version. Incorporate all the valuable patterns and ele
                 with dspy.context(lm=lm):
                     result = generator(user_directions=enhanced_input)
 
-                state["prompt_history"].append({
-                    "version": next_v,
-                    "prompt": result.detailed_prompt,
-                    "feedback_used": grok_feedback.strip()[:300] + "..."
-                })
-                state["last_prompt"] = result.detailed_prompt
+                output = result.detailed_prompt
 
-                st.success(f"✅ v{next_v} generated!")
-                if is_prd_mode:
-                    st.markdown(result.detailed_prompt)
+                if not is_valid_output(output):
+                    st.error(
+                        f"⚠️ v{next_v} came back empty or malformed. "
+                        "This usually means the feedback contained too much review commentary and not enough architectural direction. "
+                        "Try stripping ratings/scores from the feedback and resubmitting, "
+                        "or switch to ChainOfThought mode in the sidebar."
+                    )
                 else:
-                    st.code(result.detailed_prompt, language=None)
+                    state["prompt_history"].append({
+                        "version": next_v,
+                        "prompt": output,
+                        "feedback_used": grok_feedback.strip()[:300] + "..."
+                    })
+                    state["last_prompt"] = output
+                    st.success(f"✅ v{next_v} generated!")
+                    render_output(output, is_prd_mode)
+                    st.button(
+                        f"📋 Copy v{next_v} for Grok",
+                        on_click=lambda: st.clipboard(output) or st.toast("Copied!")
+                    )
 
-                st.button(
-                    f"📋 Copy v{next_v} for Grok",
-                    on_click=lambda: st.clipboard(result.detailed_prompt) or st.toast("Copied!")
-                )
             except Exception as e:
                 st.error(f"Error: {str(e)}")
 
