@@ -32,6 +32,7 @@ with st.sidebar:
     if st.button("✅ Apply API Key", type="primary", use_container_width=True):
         if api_key_input.strip():
             os.environ["OPENROUTER_API_KEY"] = api_key_input.strip()
+            st.cache_resource.clear()   # ← bust cache so new key is picked up
             st.success("✅ API Key applied")
             st.rerun()
         else:
@@ -59,6 +60,7 @@ with st.sidebar:
         model_name = model_options[selected_model_label]
 
     if st.button("✅ Apply Model", type="primary", use_container_width=True):
+        st.cache_resource.clear()       # ← bust cache so new model is picked up
         st.success(f"✅ Model set to: {selected_model_label}")
         st.rerun()
 
@@ -68,6 +70,12 @@ with st.sidebar:
         index=0,
         help="ChainOfThought usually gives better results"
     )
+
+    st.divider()
+    if st.button("🔁 Force Reload Model", use_container_width=True, help="Clear all cached resources and reload"):
+        st.cache_resource.clear()
+        st.success("Cache cleared — reloading...")
+        st.rerun()
 
 # ====================== DYNAMIC TITLE ======================
 is_video_mode = mode == "🎬 Video Scene Prompt"
@@ -88,16 +96,17 @@ else:
     st.markdown("Ultra-detailed prompts for Flux / SD3 / SDXL + Grok-powered iterative refinement")
 
 # ====================== DSPy SETUP ======================
+# API key is now part of the cache key — changing it busts the cache automatically
 @st.cache_resource(show_spinner="Loading DSPy...")
-def get_generator(module_type: str, model_name: str, mode: str):
-    if not os.getenv("OPENROUTER_API_KEY"):
+def get_generator(module_type: str, model_name: str, mode: str, api_key: str):
+    if not api_key:
         return None, None, "No API key set."
 
     try:
         lm = dspy.LM(
             model_name,
             api_base="https://openrouter.ai/api/v1",
-            api_key=os.getenv("OPENROUTER_API_KEY"),
+            api_key=api_key,
             max_tokens=2048,
             temperature=0.7
         )
@@ -241,7 +250,13 @@ Focus solely on: what to add, what to kill, what to confirm, what to challenge.
     except Exception as e:
         return None, None, str(e)
 
-generator, lm, load_error = get_generator(module_type, model_name, mode)
+# Pass API key into cache key so any change busts the cache
+generator, lm, load_error = get_generator(
+    module_type,
+    model_name,
+    mode,
+    os.getenv("OPENROUTER_API_KEY", "")
+)
 
 # ====================== SESSION STATE ======================
 img_state = st.session_state.setdefault("img", {"prompt_history": [], "last_prompt": "", "original_input": ""})
