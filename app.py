@@ -67,7 +67,7 @@ with st.sidebar:
     module_type = st.selectbox(
         "Reasoning Mode",
         options=["Predict", "ChainOfThought"],
-        index=0,
+        index=1,
         help="ChainOfThought usually gives better results"
     )
 
