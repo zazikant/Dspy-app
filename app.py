@@ -15,52 +15,84 @@ st.markdown("Ultra-detailed prompts for Flux / SD3 / SDXL + Grok-powered iterati
 with st.sidebar:
     st.header("⚙️ Settings")
 
-    api_key_input = st.text_input(
-        "OpenRouter API Key",
-        type="password",
-        value=os.getenv("OPENROUTER_API_KEY", ""),
-        help="Paste your OpenRouter API key here."
-    )
+    # ── Toggle button ──────────────────────────────────
+    if "sidebar_expanded" not in st.session_state:
+        st.session_state.sidebar_expanded = True
 
-    if st.button("✅ Apply API Key", type="primary", use_container_width=True):
-        if api_key_input.strip():
-            os.environ["OPENROUTER_API_KEY"] = api_key_input.strip()
-            st.success("✅ API Key applied")
-            st.rerun()
-        else:
-            st.error("Please enter an API key.")
-
-    model_options = {
-        "Qwen3.6 Plus Preview (Best overall)": "openrouter/qwen/qwen3.6-plus-preview:free",
-        "GLM 4.5 Air (Default)": "openrouter/z-ai/glm-4.5-air:free",        
-        "Step 3.5 Flash (Fast & strong)": "openrouter/stepfun/step-3.5-flash:free",
-        "Arcee Trinity Large Preview (Creative)": "openrouter/arcee-ai/trinity-large-preview:free",        
-        "MiniMax M2.5": "openrouter/minimax/minimax-m2.5:free",
-        "Llama 3.3 70B Instruct": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
-        "Custom Model": "custom"
-    }
-
-    selected_model_label = st.selectbox(
-        "Select Model",
-        options=list(model_options.keys()),
-        index=1,   # GLM 4.5 Air
-    )
-
-    if selected_model_label == "Custom Model":
-        model_name = st.text_input("Custom Model Name", value="openrouter/z-ai/glm-4.5-air:free")
-    else:
-        model_name = model_options[selected_model_label]
-
-    if st.button("✅ Apply Model", type="primary", use_container_width=True):
-        st.success(f"✅ Model set to: {selected_model_label}")
+    toggle_label = "🔽 Hide Settings" if st.session_state.sidebar_expanded else "▶️ Show Settings"
+    if st.button(toggle_label, use_container_width=True):
+        st.session_state.sidebar_expanded = not st.session_state.sidebar_expanded
         st.rerun()
+    # ───────────────────────────────────────────────────
 
-    module_type = st.selectbox(
-        "Reasoning Mode",
-        options=["Predict", "ChainOfThought"],
-        index=0,
-        help="ChainOfThought usually gives better results"
-    )
+    if st.session_state.sidebar_expanded:
+
+        api_key_input = st.text_input(
+            "OpenRouter API Key",
+            type="password",
+            value=os.getenv("OPENROUTER_API_KEY", ""),
+            help="Paste your OpenRouter API key here."
+        )
+
+        if st.button("✅ Apply API Key", type="primary", use_container_width=True):
+            if api_key_input.strip():
+                os.environ["OPENROUTER_API_KEY"] = api_key_input.strip()
+                st.success("✅ API Key applied")
+                st.rerun()
+            else:
+                st.error("Please enter an API key.")
+
+        model_options = {
+            "Qwen3.6 Plus Preview (Best overall)": "openrouter/qwen/qwen3.6-plus-preview:free",
+            "GLM 4.5 Air (Default)": "openrouter/z-ai/glm-4.5-air:free",
+            "Step 3.5 Flash (Fast & strong)": "openrouter/stepfun/step-3.5-flash:free",
+            "Arcee Trinity Large Preview (Creative)": "openrouter/arcee-ai/trinity-large-preview:free",
+            "MiniMax M2.5": "openrouter/minimax/minimax-m2.5:free",
+            "Llama 3.3 70B Instruct": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
+            "Custom Model": "custom"
+        }
+
+        selected_model_label = st.selectbox(
+            "Select Model",
+            options=list(model_options.keys()),
+            index=1,   # GLM 4.5 Air
+        )
+
+        if selected_model_label == "Custom Model":
+            model_name = st.text_input("Custom Model Name", value="openrouter/z-ai/glm-4.5-air:free")
+        else:
+            model_name = model_options[selected_model_label]
+
+        if st.button("✅ Apply Model", type="primary", use_container_width=True):
+            st.success(f"✅ Model set to: {selected_model_label}")
+            st.rerun()
+
+        module_type = st.selectbox(
+            "Reasoning Mode",
+            options=["Predict", "ChainOfThought"],
+            index=0,
+            help="ChainOfThought usually gives better results"
+        )
+
+    else:
+        # Preserve last-used values when collapsed so the rest of the app still works
+        model_options = {
+            "Qwen3.6 Plus Preview (Best overall)": "openrouter/qwen/qwen3.6-plus-preview:free",
+            "GLM 4.5 Air (Default)": "openrouter/z-ai/glm-4.5-air:free",
+            "Step 3.5 Flash (Fast & strong)": "openrouter/stepfun/step-3.5-flash:free",
+            "Arcee Trinity Large Preview (Creative)": "openrouter/arcee-ai/trinity-large-preview:free",
+            "MiniMax M2.5": "openrouter/minimax/minimax-m2.5:free",
+            "Llama 3.3 70B Instruct": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
+            "Custom Model": "custom"
+        }
+        selected_model_label = st.session_state.get("_last_model_label", "GLM 4.5 Air (Default)")
+        model_name = model_options.get(selected_model_label, "openrouter/z-ai/glm-4.5-air:free")
+        module_type = st.session_state.get("_last_module_type", "Predict")
+        st.info("Settings hidden. Click **▶️ Show Settings** to expand.")
+
+# Persist last-used values across collapse/expand cycles
+st.session_state["_last_model_label"] = selected_model_label
+st.session_state["_last_module_type"] = module_type
 
 # ====================== DSPy SETUP ======================
 @st.cache_resource(show_spinner="Loading DSPy...")
@@ -146,7 +178,7 @@ with col1:
                     st.success("✅ v1 ready!")
                     st.code(result.detailed_prompt, language=None)
 
-                    st.button("📋 Copy v1 for Grok", 
+                    st.button("📋 Copy v1 for Grok",
                              on_click=lambda: st.clipboard(result.detailed_prompt) or st.toast("Copied to clipboard!"))
                 except Exception as e:
                     st.error(str(e))
@@ -160,7 +192,7 @@ with col2:
 
 # ====================== GROK REFINEMENT ======================
 st.subheader("2. Iterative Refinement with Grok (Manual)")
-st.markdown("Copy the latest prompt → paste into Grok → ask for improvements → paste Grok’s reply here")
+st.markdown("Copy the latest prompt → paste into Grok → ask for improvements → paste Grok's reply here")
 
 grok_feedback = st.text_area(
     "Grok's feedback (paste entire response or key suggestions):",
@@ -194,14 +226,14 @@ Create the strongest next version. Incorporate all the valuable patterns and ele
                 st.session_state.prompt_history.append({
                     "version": new_version,
                     "prompt": result.detailed_prompt,
-                    "feedback_used": grok_feedback.strip()[:300] + "..." 
+                    "feedback_used": grok_feedback.strip()[:300] + "..."
                 })
                 st.session_state.last_prompt = result.detailed_prompt
 
                 st.success(f"✅ v{new_version} generated!")
                 st.code(result.detailed_prompt, language=None)
 
-                st.button("📋 Copy v{new_version} for Grok", 
+                st.button("📋 Copy v{new_version} for Grok",
                          on_click=lambda: st.clipboard(result.detailed_prompt) or st.toast("Copied!"))
             except Exception as e:
                 st.error(f"Error: {str(e)}")
