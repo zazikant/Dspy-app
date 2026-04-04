@@ -624,10 +624,8 @@ with col1:
                         }]
                         st.success("✅ v1 ready!")
                         render_output(output, is_prd_mode or is_prd_exhaustive)
-                        st.button(
-                            "📋 Copy v1 for Grok",
-                            on_click=lambda: st.clipboard(output) or st.toast("Copied to clipboard!")
-                        )
+                        with st.expander("📋 Copy v1 for Grok", expanded=False):
+                            st.code(output, language=None)
                 except Exception as e:
                     st.error(str(e))
 
@@ -795,10 +793,8 @@ Create the strongest next version. Incorporate all the valuable patterns and ele
                     state["last_prompt"] = output
                     st.success(f"✅ v{next_v} generated!")
                     render_output(output, is_prd_mode or is_prd_exhaustive)
-                    st.button(
-                        f"📋 Copy v{next_v} for Grok",
-                        on_click=lambda: st.clipboard(output) or st.toast("Copied!")
-                    )
+                    with st.expander(f"📋 Copy v{next_v} for Grok", expanded=False):
+                        st.code(output, language=None)
 
             except Exception as e:
                 st.error(f"Error: {str(e)}")
