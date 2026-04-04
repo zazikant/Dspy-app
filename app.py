@@ -616,24 +616,9 @@ def is_valid_output(text):
     return text and isinstance(text, str) and len(text.strip()) > 100
 
 def render_output(text, is_prd):
-    """Render output — for 32k PRD mode uses a scrollable container to avoid
-    browser lag from rendering a 120k+ char markdown blob in one shot."""
+    """Render full output — no truncation."""
     if is_prd:
-        # Wrap in a fixed-height scrollable div so Streamlit doesn't try to
-        # paint the entire document height at once. User can scroll or copy.
-        char_count = len(text)
-        if char_count > 20000:
-            # Large output: show preview + word count, full text via copy button
-            st.info(
-                f"📄 Output is {char_count:,} characters (~{char_count//4:,} tokens). "
-                "Scroll below or use the Copy button to get the full text.",
-                icon="ℹ️"
-            )
-            # Render first ~8000 chars as preview so user can verify quality
-            preview = text[:8000] + "\n\n---\n*[Preview truncated — use Copy button for full output]*"
-            st.markdown(preview)
-        else:
-            st.markdown(text)
+        st.markdown(text)
     else:
         st.code(text, language=None)
 
@@ -721,10 +706,7 @@ with col1:
                         st.success("✅ v1 ready!")
                         render_output(output, is_prd_mode or is_prd_exhaustive)
                         with st.expander("📋 Copy v1 for Grok", expanded=True):
-                            if is_prd_exhaustive:
-                                st.caption(f"Full output: {len(output):,} characters (~{len(output)//4:,} tokens)")
-                            else:
-                                st.code(output, language=None)
+                            st.code(output, language=None)
                             copy_button(output, "📋 Copy v1 to Clipboard")
                 except Exception as e:
                     err = str(e)
@@ -899,10 +881,7 @@ Create the strongest next version. Incorporate all the valuable patterns and ele
                     st.success(f"✅ v{next_v} generated!")
                     render_output(output, is_prd_mode or is_prd_exhaustive)
                     with st.expander(f"📋 Copy v{next_v} for Grok", expanded=True):
-                        if is_prd_exhaustive:
-                            st.caption(f"Full output: {len(output):,} characters (~{len(output)//4:,} tokens)")
-                        else:
-                            st.code(output, language=None)
+                        st.code(output, language=None)
                         copy_button(output, f"📋 Copy v{next_v} to Clipboard")
 
             except Exception as e:
