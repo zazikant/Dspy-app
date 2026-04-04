@@ -8,6 +8,48 @@ st.set_page_config(
     layout="centered"
 )
 
+# ====================== CLIPBOARD HELPER ======================
+def copy_button(text: str, label: str = "📋 Copy to Clipboard"):
+    """Render a real clipboard copy button for arbitrarily long text."""
+    import streamlit.components.v1 as components
+    # Escape backticks and backslashes so the JS template literal is safe
+    safe_text = text.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
+    components.html(
+        f"""
+        <textarea id="copy-area" style="position:absolute;left:-9999px;top:-9999px;">{{}}</textarea>
+        <button onclick="
+            var txt = `{safe_text}`;
+            navigator.clipboard.writeText(txt).then(function() {{
+                this.innerText = '✅ Copied!';
+                this.style.background = '#2d6a2d';
+                setTimeout(() => {{ this.innerText = '{label}'; this.style.background = '#1f77b4'; }}, 2000);
+            }}.bind(this)).catch(function() {{
+                var ta = document.createElement('textarea');
+                ta.value = txt;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                this.innerText = '✅ Copied!';
+                this.style.background = '#2d6a2d';
+                setTimeout(() => {{ this.innerText = '{label}'; this.style.background = '#1f77b4'; }}, 2000);
+            }}.bind(this));
+        "
+        style="
+            background:#1f77b4;
+            color:white;
+            border:none;
+            padding:10px 20px;
+            border-radius:6px;
+            font-size:14px;
+            cursor:pointer;
+            width:100%;
+            margin-top:4px;
+        ">{label}</button>
+        """,
+        height=55,
+    )
+
 # ====================== SIDEBAR ======================
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -310,94 +352,115 @@ Focus solely on: what to add, what to kill, what to confirm, what to challenge.
         elif mode == "📐 Exhaustive PRD (32k)":
             class ExhaustivePRDPrompt(dspy.Signature):
                 """
-                You are a senior software architect and technical product strategist. Your job is to take a raw feature idea or problem statement and produce a comprehensive, opinionated PRD meta-prompt — a living technical document that sharpens itself with every round of expert feedback.
+You are a principal engineer writing a technical specification that a developer can implement without asking a single follow-up question. No prose. No story. No scene-setting. Every token spent must be a decision, a field name, a type, an edge, an error code, or a constraint.
 
-Think like someone who has seen every naive approach fail and every clever pattern succeed. Be decisive. Name the architecture. Commit to the stack. Call out the anti-patterns. And crucially: be willing to KILL components that don't survive scrutiny.
+YOU HAVE A 32,000 TOKEN OUTPUT BUDGET. SPEND IT ON SPEC DEPTH, NOT NARRATIVE WIDTH.
+More tokens = more fields defined, more edge cases covered, more code written, more error paths named.
+NOT more sentences explaining what a database is.
 
-YOU HAVE A 32,000 TOKEN OUTPUT BUDGET. USE IT.
-Do not summarise. Do not truncate. Do not write "see above" or "as mentioned". Every section must be written in full, every time.
-Every component, every decision, every data field, every interface — spelled out completely.
-If a previous version had 8 sections, this version must have at least 8 — likely more, and each one longer.
-The Graveyard must grow with every round. If nothing was killed, challenge the weakest ⚠️ item and kill it.
-A short PRD here is a failure. You have the token budget — spend it on precision and completeness.
+THE THREE MARKERS — apply to every component, library, pattern, and decision:
+  ✅ CONFIRMED — locked in, build on it, never re-debate
+  ⚠️ CHALLENGED — survives this round only with a one-line concrete justification; unkillable items become ❌ next round
+  ❌ REMOVED — dead, goes only in Graveyard, never referenced again
 
-THE THREE MARKERS — use them rigorously on every component, tool, and decision:
+GROK FEEDBACK RULE: If the input contains Grok feedback, extract ONLY architectural decisions.
+Strip all scores, ratings, praise, and meta-commentary. Apply only: what to add, kill, confirm, or challenge.
 
-  ✅ CONFIRMED ARCHITECTURE
-     — This pattern/component has been reinforced across multiple Grok rounds. It is locked in.
-       Never remove or question it in future versions. Build on it.
+═══════════════════════════════════════════════════════
+REQUIRED SECTIONS — write every one, every time, in full
+═══════════════════════════════════════════════════════
 
-  ⚠️ CHALLENGED
-     — Grok has questioned this component but hasn't killed it yet. It must be explicitly
-       justified with a concrete reason in this version, or promoted to ❌ REMOVED.
-       A ⚠️ CHALLENGED item that cannot be justified this round becomes ❌ REMOVED next round.
+## 1. PROBLEM STATEMENT [3-5 sentences MAX]
+- Sentence 1: What breaks without this system (specific failure mode, not generic pain)
+- Sentence 2: Why the naive/obvious approach fails (name the approach, name the failure)
+- Sentence 3: The exact constraint that makes this hard (scale, latency, consistency, auth, etc.)
+- Sentence 4-5 (optional): What "solved" looks like in measurable terms
 
-  ❌ REMOVED
-     — Grok has repeatedly challenged this and it has failed to justify its existence.
-       Move it immediately to the ARCHITECTURE GRAVEYARD. It must NEVER reappear in any
-       future section of the PRD. Do not soften this — dead weight stays buried.
+NO PARAGRAPHS. NO BACKGROUND. If it doesn't name a concrete failure or constraint, cut it.
 
-ALWAYS structure your output as a complete PRD meta-prompt covering ALL of the following sections:
+## 2. CORE ARCHITECTURE DECISION
+Format strictly as:
+  CHOSEN: [Pattern name] ✅ CONFIRMED — [one sentence: why it wins on the specific constraint above]
+  KILLED: ❌ [Alternative] — [one sentence: specific reason it fails on THIS problem]
+  KILLED: ❌ [Alternative] — [one sentence: specific reason it fails on THIS problem]
+  COMMITMENT: [The one architectural invariant that must never be violated]
 
-1. PROBLEM STATEMENT
-   - Crisp one-paragraph definition of what is being solved and why naive approaches break down
+## 3. TECH STACK & TOOLING
+One line per component. Format:
+  [Library/Tool] vX.Y ✅/⚠️/❌ — [exact role in this system] | [why this over the obvious alternative]
+  ⚠️ items MUST include: "Survives because: [one concrete reason]"
+  ❌ items must NOT appear here — Graveyard only.
 
-2. CORE ARCHITECTURE DECISION
-   - Name the primary architectural pattern chosen — mark it ✅ CONFIRMED if reinforced
-   - State WHY this pattern wins over the alternatives considered
-   - Explicitly name patterns that are ❌ REMOVED and must never return
+## 4. DATA CONTRACTS & SCHEMAS
+Write the actual code. Every field must have:
+  - Name, type, constraints (min/max/regex/enum), nullable?, default, which component writes it, which reads it
+  Format as Python TypedDict or Pydantic BaseModel with Field() annotations.
+  No field descriptions in prose — annotate inline with comments.
+  Cover: primary state object, every entity passed between nodes/services, every DB table schema.
 
-3. TECH STACK & TOOLING
-   - Every component must carry exactly one marker: ✅ CONFIRMED, ⚠️ CHALLENGED, or ❌ REMOVED
-   - ⚠️ CHALLENGED components must include a one-line justification or be killed this round
-   - ❌ REMOVED components must not appear here — they go only in the Graveyard
+## 5. COMPONENT MAP & EXECUTION FLOW
+First: ASCII node graph showing every component, every directed edge, every conditional branch.
+  Format: [node_name] --condition--> [next_node] or END
+  Every branch must be named. No implicit "then it continues".
 
-4. DATA MODEL & FLOW
-   - Key entities and their relationships
-   - How data moves through the system end-to-end
-   - Any transformation or enrichment steps
+Then: For EACH node/service/stage, write a spec block:
+  NODE: node_name
+  INPUT:  field: type  # constraint
+  OUTPUT: field: type  # constraint
+  PROCESS:
+    1. [Exact operation — name the function/method/API call]
+    2. [Exact operation]
+    ...
+  ERROR HANDLING:
+    [ErrorType] → [exact action: retry N times / transition to X node / raise / log + skip]
+  STATE MUTATIONS: [list every GraphState field this node reads and writes]
+  INVARIANTS: [what must be true before and after this node runs]
 
-5. WORKFLOW & SEQUENCE
-   - Step-by-step operational flow a developer would implement
-   - Name every component, node, service, or stage explicitly with its connections and transitions
-   - Define all state fields, message schemas, or data contracts passed between steps
-   - Decision points, branching logic, error handling strategy
+## 6. INTERFACE CONTRACTS
+Write actual signatures. No pseudocode — valid Python/TypeScript/SQL.
+  For every external interface:
+    - Full function/method signature with types
+    - Preconditions (what must be true before calling)
+    - Postconditions (what is guaranteed on success)
+    - Every exception/error type it raises and why
+    - HTTP: method, path, request schema, response schema, all error codes with meanings
 
-6. INTERFACE CONTRACTS
-   - API shape with key endpoints or function signatures — mark any ⚠️ CHALLENGED
-   - Input validation strategy
-   - Response structure and error codes
+## 7. FAILURE MODES & RECOVERY PATHS
+Table format:
+  FAILURE | DETECTION | RECOVERY ACTION | STATE AFTER RECOVERY | PREVENTS
+  One row per distinct failure mode. Be exhaustive — at least 8 rows.
+  Include: auth expiry, rate limits, partial writes, schema mismatch, timeout, poison pill records, OOM.
 
-7. OPEN QUESTIONS & NEXT REFINEMENT TARGETS
-   - What is still unresolved
-   - Which ⚠️ CHALLENGED decisions Grok should stress-test next
-   - Hypotheses worth challenging
+## 8. OPEN DECISIONS [max 5 items]
+Format strictly:
+  ❓ [Decision title]
+  Options: A) [option] — [tradeoff] | B) [option] — [tradeoff]
+  Kill if: [condition under which one option is immediately eliminated]
+  Decide by: [what test or metric resolves this]
 
-8. ARCHITECTURE GRAVEYARD
-   - Every component ever marked ❌ REMOVED, listed with a one-line reason why it was killed
-   - This section only ever grows — nothing leaves the Graveyard
-   - Format: "❌ [Component name] — [reason killed]"
-   - If no components have been removed yet, write: "No casualties yet — first round."
+No open-ended questions. Every item must have a decision path.
 
-RULES:
-- You have 32,000 output tokens — there is no excuse for a thin or vague section
-- Write every section exhaustively: every component named, every field defined, every decision explained
-- Every version must have FEWER ⚠️ CHALLENGED items than the previous version
-- The Graveyard must grow with each Grok round or you are not being decisive enough
-- It must be immediately usable as context for a developer or the next Grok refinement round
+## 9. ARCHITECTURE GRAVEYARD
+  ❌ [Component] — [exact round killed] — [one-line kill reason]
+  This section only grows. Nothing leaves. No softening.
+  First round with no kills: write "No casualties — [name the weakest ⚠️ item and what would kill it]"
 
-TONE: Opinionated, specific, architect-grade. No vague platitudes. Every sentence either names something concrete or makes a decision.
-
-CRITICAL: You MUST always return the full PRD document. Never return None, empty string, or partial output.
-If the input contains ratings, scores, or review-style feedback mixed with architectural suggestions,
-extract ONLY the architectural suggestions and apply them. Ignore scores, praise, and meta-commentary.
-Focus solely on: what to add, what to kill, what to confirm, what to challenge.
+═══════════════════════════════════════════
+ABSOLUTE RULES
+═══════════════════════════════════════════
+- Problem Statement ≤ 5 sentences. Violation = rewrite it.
+- Every node in section 5 gets a full spec block. No exceptions.
+- Every field in section 4 has a type and constraint. "string" alone is not a type.
+- No sentence starts with "This system", "The goal", "In order to", or "We need to".
+- No section may contain only prose where code or a table would serve.
+- ⚠️ CHALLENGED count must decrease each version. If it doesn't, you are not deciding.
+- NEVER return None, empty string, or truncated output.
                 """
                 user_directions: str = dspy.InputField(
-                    desc="Original feature/problem description + previous PRD meta-prompt + architectural feedback from Grok. NOTE: extract only architectural decisions from the feedback — ignore any ratings, scores, or review commentary."
+                    desc="Feature/problem description + optional previous PRD + optional Grok feedback. Extract only architectural decisions from feedback — strip all scores, ratings, and commentary."
                 )
                 detailed_prompt: str = dspy.OutputField(
-                    desc="Full exhaustive PRD with ✅ CONFIRMED / ⚠️ CHALLENGED / ❌ REMOVED markers on every component, plus Architecture Graveyard. Use the full 32k token budget — every section written completely, nothing summarised. Must never be empty or None."
+                    desc="Complete exhaustive PRD spec. Every node fully specced. Every field typed. Every failure mode named. Every interface contracted. ✅/⚠️/❌ on every decision. Graveyard at end. Never empty, never truncated."
                 )
 
             sig = ExhaustivePRDPrompt
@@ -624,8 +687,9 @@ with col1:
                         }]
                         st.success("✅ v1 ready!")
                         render_output(output, is_prd_mode or is_prd_exhaustive)
-                        with st.expander("📋 Copy v1 for Grok", expanded=False):
+                        with st.expander("📋 Copy v1 for Grok", expanded=True):
                             st.code(output, language=None)
+                            copy_button(output, "📋 Copy v1 to Clipboard")
                 except Exception as e:
                     st.error(str(e))
 
@@ -722,26 +786,27 @@ if st.button(refine_label, type="primary", use_container_width=True):
         with st.spinner(f"Creating v{next_v} ..."):
             try:
                 if is_prd_exhaustive:
-                    enhanced_input = f"""Original feature / problem description:
+                    enhanced_input = f"""ORIGINAL PROBLEM:
 {state['original_input']}
 
-Previous Exhaustive PRD (v{len(state['prompt_history'])}):
+PREVIOUS SPEC (v{len(state['prompt_history'])}):
 {state['last_prompt']}
 
-Structural and architectural feedback to apply:
+GROK FEEDBACK — extract ONLY the architectural decisions below.
+Strip all scores, ratings, praise, and meta-commentary before applying.
+Apply only: what to add, what to kill, what to confirm, what to challenge.
 {grok_feedback.strip()}
 
-MANDATORY INSTRUCTIONS FOR THIS VERSION:
-- This version MUST be longer and more detailed than v{len(state['prompt_history'])} — no section may shrink
-- Add every new component mentioned in feedback with ALL required fields fully written out
-- Add every new routing/conditional decision with its full boolean condition
-- Expand the data schema with any new fields — include type, comment, and which component writes it
-- Promote every reinforced component to ✅ CONFIRMED with a full explanatory paragraph
-- Move every challenged component to ⚠️ CHALLENGED with a multi-sentence defence, or kill it immediately
-- Move every killed component to ❌ REMOVED — add to Graveyard with round number and exact kill reason
-- The Architecture Graveyard must be larger than v{len(state['prompt_history'])}'s Graveyard
-- Every ⚠️ CHALLENGED item from the previous version must be confirmed or removed — none survive unchanged
-- Return the COMPLETE exhaustive PRD. Never truncate. Never summarise. Never return partial output."""
+MANDATORY FOR v{len(state['prompt_history']) + 1}:
+- GROK FILTERING: Ignore any sentence from the feedback that contains a score, rating, percentage, or review commentary. Extract only: new components to add, components to kill, decisions to confirm, decisions to challenge.
+- PROBLEM STATEMENT: Max 5 sentences. If the previous version was longer, cut it down. No background prose.
+- DATA CONTRACTS: Every new field mentioned in feedback must appear in section 4 with full type + constraint. No field without a type. No type without a constraint.
+- COMPONENT MAP: Add every new node/edge mentioned in feedback to the ASCII graph. Every new node gets a full NODE spec block — INPUT, OUTPUT, PROCESS steps, ERROR HANDLING, STATE MUTATIONS, INVARIANTS.
+- FAILURE MODES: Add any new failure mode surfaced in feedback as a table row. Minimum 8 rows total.
+- INTERFACE CONTRACTS: Every new interface mentioned in feedback written as actual code signature, not prose.
+- ⚠️ CHALLENGED: Every ⚠️ item from v{len(state['prompt_history'])} must be confirmed ✅ or killed ❌ — none survive unchanged.
+- GRAVEYARD: Must have more entries than v{len(state['prompt_history'])}. If nothing new was killed, kill the weakest ⚠️ item and explain why.
+- NEVER: grow the Problem Statement, write prose where a table or code block would serve, or return partial output."""
                 elif is_prd_mode:
                     enhanced_input = f"""Original feature / problem description:
 {state['original_input']}
@@ -793,8 +858,9 @@ Create the strongest next version. Incorporate all the valuable patterns and ele
                     state["last_prompt"] = output
                     st.success(f"✅ v{next_v} generated!")
                     render_output(output, is_prd_mode or is_prd_exhaustive)
-                    with st.expander(f"📋 Copy v{next_v} for Grok", expanded=False):
+                    with st.expander(f"📋 Copy v{next_v} for Grok", expanded=True):
                         st.code(output, language=None)
+                        copy_button(output, f"📋 Copy v{next_v} to Clipboard")
 
             except Exception as e:
                 st.error(f"Error: {str(e)}")
@@ -826,6 +892,7 @@ if state["prompt_history"]:
                 st.markdown(item['prompt'])
             else:
                 st.code(item['prompt'], language=None)
+            copy_button(item['prompt'], f"📋 Copy v{item['version']} to Clipboard")
             st.caption(f"Based on: {item['feedback_used']}")
 
 mode_label_map = {
