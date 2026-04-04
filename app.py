@@ -77,9 +77,9 @@ with st.sidebar:
     }
 
     nvidia_model_options = {
-        "Kimi K2.5 (32k output)": "nvidia_nim/moonshotai/kimi-k2",
-        "MiniMax M2.5 (32k output)": "nvidia_nim/minimax/minimax-text-01",
-        "GPT OSS 120B (32k output)": "nvidia_nim/deepseek/deepseek-r1-0528",
+        "Kimi K2.5 (32k output)": "nvidia_nim/moonshotai/kimi-k2.5",
+        "MiniMax M2.5 (32k output)": "nvidia_nim/minimaxai/minimax-m2.5",
+        "GPT OSS 120B (32k output)": "nvidia_nim/openai/gpt-oss-120b",
     }
 
     if is_nvidia:
