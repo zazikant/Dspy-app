@@ -37,7 +37,7 @@ with st.sidebar:
         api_key_input = st.text_input(
             "OpenRouter API Key",
             type="password",
-            value=os.getenv("OPENROUTER_API_KEY", ""),
+            value=os.getenv("OPENROUTER_API_KEY", "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"),
             help="Paste your OpenRouter API key here."
         )
         if st.button("✅ Apply API Key", type="primary", use_container_width=True):
@@ -50,7 +50,20 @@ with st.sidebar:
                 st.error("Please enter an API key.")
     else:
         api_key_input = ""
-        st.info("🟢 NVIDIA NIM models require no API key.", icon="ℹ️")
+        nvidia_key_input = st.text_input(
+            "NVIDIA NIM API Key",
+            type="password",
+            value=os.getenv("NVIDIA_NIM_API_KEY", ""),
+            help="Paste your NVIDIA NIM API key here."
+        )
+        if st.button("✅ Apply NVIDIA Key", type="primary", use_container_width=True):
+            if nvidia_key_input.strip():
+                os.environ["NVIDIA_NIM_API_KEY"] = nvidia_key_input.strip()
+                st.cache_resource.clear()
+                st.success("✅ NVIDIA Key applied")
+                st.rerun()
+            else:
+                st.error("Please enter your NVIDIA NIM API key.")
 
     # ── Model lists ──────────────────────────────────────────
     openrouter_model_options = {
@@ -129,7 +142,7 @@ elif is_prd_exhaustive:
     st.markdown(
         "No token limits. Every node, every edge, every interface contract written in full. "
         "The Architecture Graveyard grows without bound. "
-        "Designed for LangGraph systems with complex branching, conditional edges, sub-graphs, and multi-agent coordination. "
+        "Designed for any architecture — microservices, agent pipelines, event-driven systems, ETL, web apps, and more. "
         "**Requires NVIDIA NIM (32k output).** Each Grok round expands depth — nothing is summarised, everything is spelled out."
     )
 else:
@@ -142,7 +155,7 @@ else:
 def get_generator(module_type: str, model_name: str, mode: str, api_key: str, provider: str):
     is_nvidia = provider == "NVIDIA NIM"
 
-    if not is_nvidia and not api_key:
+    if not api_key:
         return None, None, "No API key set."
 
     try:
@@ -150,7 +163,7 @@ def get_generator(module_type: str, model_name: str, mode: str, api_key: str, pr
             lm = dspy.LM(
                 model_name,
                 api_base="https://integrate.api.nvidia.com/v1",
-                api_key="no-key-required",
+                api_key=api_key,
                 max_tokens=32000,
                 temperature=0.7
             )
@@ -202,6 +215,96 @@ ALWAYS follow these guidelines:
                 detailed_prompt: str = dspy.OutputField(desc="Final optimized video generation prompt")
 
             sig = SceneToVideoPrompt
+
+        # ── PRD SIGNATURE ────────────────────────────────
+        elif mode == "🧠 Software PRD Prompt":
+            class SoftwareToPRDPrompt(dspy.Signature):
+                """
+                You are a senior software architect and technical product strategist. Your job is to take a raw feature idea or problem statement and produce a comprehensive, opinionated PRD meta-prompt — a living technical document that sharpens itself with every round of expert feedback.
+
+Think like someone who has seen every naive approach fail and every clever pattern succeed. Be decisive. Name the architecture. Commit to the stack. Call out the anti-patterns. And crucially: be willing to KILL components that don't survive scrutiny.
+
+THE THREE MARKERS — use them rigorously on every component, tool, and decision:
+
+  ✅ CONFIRMED ARCHITECTURE
+     — This pattern/component has been reinforced across multiple Grok rounds. It is locked in.
+       Never remove or question it in future versions. Build on it.
+
+  ⚠️ CHALLENGED
+     — Grok has questioned this component but hasn't killed it yet. It must be explicitly
+       justified with a concrete reason in this version, or promoted to ❌ REMOVED.
+       A ⚠️ CHALLENGED item that cannot be justified this round becomes ❌ REMOVED next round.
+
+  ❌ REMOVED
+     — Grok has repeatedly challenged this and it has failed to justify its existence.
+       Move it immediately to the ARCHITECTURE GRAVEYARD. It must NEVER reappear in any
+       future section of the PRD. Do not soften this — dead weight stays buried.
+
+ALWAYS structure your output as a complete PRD meta-prompt covering ALL of the following sections:
+
+1. PROBLEM STATEMENT
+   - Crisp one-paragraph definition of what is being solved and why naive approaches break down
+
+2. CORE ARCHITECTURE DECISION
+   - Name the primary architectural pattern chosen — mark it ✅ CONFIRMED if reinforced
+   - State WHY this pattern wins over the alternatives considered
+   - Explicitly name patterns that are ❌ REMOVED and must never return
+
+3. TECH STACK & TOOLING
+   - Every component must carry exactly one marker: ✅ CONFIRMED, ⚠️ CHALLENGED, or ❌ REMOVED
+   - ⚠️ CHALLENGED components must include a one-line justification or be killed this round
+   - ❌ REMOVED components must not appear here — they go only in the Graveyard
+
+4. DATA MODEL & FLOW
+   - Key entities and their relationships
+   - How data moves through the system end-to-end
+   - Any transformation or enrichment steps
+
+5. WORKFLOW & SEQUENCE
+   - Step-by-step operational flow a developer would implement
+   - Name every LangGraph node explicitly with edges (e.g. pdf_loader → ocr_detector → text_extractor → llm_extractor → validator → formatter)
+   - Define the LangGraph state object fields (TypedDict)
+   - Decision points, branching logic, error handling strategy
+
+6. INTERFACE CONTRACTS
+   - API shape with key endpoints or function signatures — mark any ⚠️ CHALLENGED
+   - Input validation strategy
+   - Response structure and error codes
+
+7. OPEN QUESTIONS & NEXT REFINEMENT TARGETS
+   - What is still unresolved
+   - Which ⚠️ CHALLENGED decisions Grok should stress-test next
+   - Hypotheses worth challenging
+
+8. ARCHITECTURE GRAVEYARD
+   - Every component ever marked ❌ REMOVED, listed with a one-line reason why it was killed
+   - This section only ever grows — nothing leaves the Graveyard
+   - Format: "❌ [Component name] — [reason killed]"
+   - If no components have been removed yet, write: "No casualties yet — first round."
+
+RULES:
+- A leaner PRD that makes fewer decisions confidently beats a bloated one that lists every option
+- If Grok challenged something and you cannot justify it in one concrete sentence, kill it
+- Every version must have FEWER ⚠️ CHALLENGED items than the previous version
+- The Graveyard must grow with each Grok round or you are not being decisive enough
+- Output the full PRD meta-prompt as a well-structured document (250-600 words)
+- It must be immediately usable as context for a developer or the next Grok refinement round
+
+TONE: Opinionated, specific, architect-grade. No vague platitudes. Every sentence either names something concrete or makes a decision.
+
+CRITICAL: You MUST always return the full PRD document. Never return None, empty string, or partial output.
+If the input contains ratings, scores, or review-style feedback mixed with architectural suggestions,
+extract ONLY the architectural suggestions and apply them. Ignore scores, praise, and meta-commentary.
+Focus solely on: what to add, what to kill, what to confirm, what to challenge.
+                """
+                user_directions: str = dspy.InputField(
+                    desc="Original feature/problem description + previous PRD meta-prompt + architectural feedback from Grok. NOTE: extract only architectural decisions from the feedback — ignore any ratings, scores, or review commentary."
+                )
+                detailed_prompt: str = dspy.OutputField(
+                    desc="Full PRD meta-prompt with ✅ CONFIRMED / ⚠️ CHALLENGED / ❌ REMOVED markers on every component, plus Architecture Graveyard. Must never be empty or None."
+                )
+
+            sig = SoftwareToPRDPrompt
 
         # ── EXHAUSTIVE PRD SIGNATURE ─────────────────────
         elif mode == "📐 Exhaustive PRD (32k)":
@@ -345,8 +448,8 @@ ALWAYS structure your output as a complete PRD meta-prompt covering ALL of the f
 
 5. WORKFLOW & SEQUENCE
    - Step-by-step operational flow a developer would implement
-   - Name every LangGraph node explicitly with edges (e.g. pdf_loader → ocr_detector → text_extractor → llm_extractor → validator → formatter)
-   - Define the LangGraph state object fields (TypedDict)
+   - Name every component, service, node, or stage explicitly with its connections and transitions
+   - Define all state fields, message schemas, or data contracts passed between steps
    - Decision points, branching logic, error handling strategy
 
 6. INTERFACE CONTRACTS
@@ -402,7 +505,7 @@ Focus solely on: what to add, what to kill, what to confirm, what to challenge.
         return None, None, str(e)
 
 # Pass provider + API key into cache key so any change busts the cache
-_api_key = "" if is_nvidia else os.getenv("OPENROUTER_API_KEY", "")
+_api_key = os.getenv("NVIDIA_NIM_API_KEY", "") if is_nvidia else os.getenv("OPENROUTER_API_KEY", "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")
 generator, lm, load_error = get_generator(
     module_type,
     model_name,
@@ -490,7 +593,9 @@ with col1:
     else:
         btn_label = "✨ Generate Initial Prompt (v1)"
     if st.button(btn_label, type="primary", use_container_width=True):
-        if not is_nvidia and not os.getenv("OPENROUTER_API_KEY"):
+        if is_nvidia and not os.getenv("NVIDIA_NIM_API_KEY"):
+            st.error("Please apply NVIDIA NIM API key first.")
+        elif not is_nvidia and not os.getenv("OPENROUTER_API_KEY"):
             st.error("Please apply OpenRouter API key first.")
         elif not user_input.strip():
             st.error("Please describe your feature / scene!")
@@ -570,11 +675,11 @@ placeholder_feedback_map = {
         "Architectural feedback to apply:\n"
         "- KILL spaCy and Transformers — LLM handles extraction better, move to Graveyard\n"
         "- KILL PyPDF2 — abandoned, pdfplumber wins, confirm it\n"
-        "- CONFIRM LangGraph as orchestrator\n"
+        "- CONFIRM the chosen orchestrator/framework\n"
         "- CONFIRM GPT-4o-mini + Pydantic structured output as extraction core\n"
-        "- Name the LangGraph nodes explicitly: pdf_loader → ocr_detector → text_extractor → llm_extractor → validator → formatter\n"
-        "- Add OCR fallback branch for scanned PDFs using pdf2image + Tesseract\n"
-        "- Define the state TypedDict fields between nodes"
+        "- Name every component explicitly with its connections and transitions\n"
+        "- Add fallback/error handling branch for failed processing\n"
+        "- Define all state fields and data contracts passed between components"
     ),
     "📐 Exhaustive PRD (32k)": (
         "Paste Grok's structural + architectural feedback here. Examples of what to include:\n"
@@ -630,9 +735,9 @@ Structural and architectural feedback to apply:
 
 MANDATORY INSTRUCTIONS FOR THIS VERSION:
 - This version MUST be longer and more detailed than v{len(state['prompt_history'])} — no section may shrink
-- Add every new node mentioned in feedback to the Node Catalogue with ALL required fields fully written out
-- Add every new conditional edge to the Conditional Edge Map with its full boolean condition
-- Expand the State TypedDict with any new fields — include type, comment, and which node writes it
+- Add every new component mentioned in feedback with ALL required fields fully written out
+- Add every new routing/conditional decision with its full boolean condition
+- Expand the data schema with any new fields — include type, comment, and which component writes it
 - Promote every reinforced component to ✅ CONFIRMED with a full explanatory paragraph
 - Move every challenged component to ⚠️ CHALLENGED with a multi-sentence defence, or kill it immediately
 - Move every killed component to ❌ REMOVED — add to Graveyard with round number and exact kill reason
