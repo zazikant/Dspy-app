@@ -79,7 +79,7 @@ with st.sidebar:
         api_key_input = st.text_input(
             "OpenRouter API Key",
             type="password",
-            value=os.getenv("OPENROUTER_API_KEY", "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"),
+            value=os.getenv("OPENROUTER_API_KEY", ""),
             help="Paste your OpenRouter API key here."
         )
         if st.button("✅ Apply API Key", type="primary", use_container_width=True):
@@ -568,7 +568,7 @@ Focus solely on: what to add, what to kill, what to confirm, what to challenge.
         return None, None, str(e)
 
 # Pass provider + API key into cache key so any change busts the cache
-_api_key = os.getenv("NVIDIA_NIM_API_KEY", "") if is_nvidia else os.getenv("OPENROUTER_API_KEY", "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")
+_api_key = os.getenv("NVIDIA_NIM_API_KEY", "") if is_nvidia else os.getenv("OPENROUTER_API_KEY", "")
 generator, lm, load_error = get_generator(
     module_type,
     model_name,
@@ -691,7 +691,11 @@ with col1:
                             st.code(output, language=None)
                             copy_button(output, "📋 Copy v1 to Clipboard")
                 except Exception as e:
-                    st.error(str(e))
+                    err = str(e)
+                    if "401" in err or "AuthenticationError" in err or "User not found" in err:
+                        st.error("❌ Invalid or expired API key. Please paste a fresh key in the sidebar and click Apply.")
+                    else:
+                        st.error(err)
 
 with col2:
     if st.button("🔄 Reset Everything", type="secondary", use_container_width=True):
@@ -863,7 +867,11 @@ Create the strongest next version. Incorporate all the valuable patterns and ele
                         copy_button(output, f"📋 Copy v{next_v} to Clipboard")
 
             except Exception as e:
-                st.error(f"Error: {str(e)}")
+                    err = str(e)
+                    if "401" in err or "AuthenticationError" in err or "User not found" in err:
+                        st.error("❌ Invalid or expired API key. Please paste a fresh key in the sidebar and click Apply.")
+                    else:
+                        st.error(f"Error: {err}")
 
 # ====================== HISTORY ======================
 if state["prompt_history"]:
