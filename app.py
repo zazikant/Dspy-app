@@ -10,44 +10,62 @@ st.set_page_config(
 
 # ====================== CLIPBOARD HELPER ======================
 def copy_button(text: str, label: str = "📋 Copy to Clipboard"):
-    """Render a real clipboard copy button for arbitrarily long text."""
+    """Clipboard copy that works for arbitrarily large outputs (32k+).
+
+    Key fix: full text is written into a hidden <textarea> via html.escape()
+    at render time. The JS reads from that DOM node — not a JS string literal —
+    so there is no browser template-literal size cap or Streamlit iframe
+    serialization truncation regardless of output length.
+    """
     import streamlit.components.v1 as components
-    # Escape backticks and backslashes so the JS template literal is safe
-    safe_text = text.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
+    import html as html_mod
+    encoded = html_mod.escape(text, quote=True)
+    btn_id = f"copy-btn-{abs(hash(text)) % 1000000}"
+    ta_id  = f"copy-ta-{abs(hash(text)) % 1000000}"
     components.html(
         f"""
-        <textarea id="copy-area" style="position:absolute;left:-9999px;top:-9999px;">{{}}</textarea>
-        <button onclick="
-            var txt = `{safe_text}`;
-            navigator.clipboard.writeText(txt).then(function() {{
-                this.innerText = '✅ Copied!';
-                this.style.background = '#2d6a2d';
-                setTimeout(() => {{ this.innerText = '{label}'; this.style.background = '#1f77b4'; }}, 2000);
-            }}.bind(this)).catch(function() {{
-                var ta = document.createElement('textarea');
-                ta.value = txt;
-                document.body.appendChild(ta);
-                ta.select();
-                document.execCommand('copy');
-                document.body.removeChild(ta);
-                this.innerText = '✅ Copied!';
-                this.style.background = '#2d6a2d';
-                setTimeout(() => {{ this.innerText = '{label}'; this.style.background = '#1f77b4'; }}, 2000);
-            }}.bind(this));
-        "
-        style="
-            background:#1f77b4;
-            color:white;
-            border:none;
-            padding:10px 20px;
-            border-radius:6px;
-            font-size:14px;
-            cursor:pointer;
-            width:100%;
-            margin-top:4px;
-        ">{label}</button>
+        <textarea id="{ta_id}"
+            style="position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;"
+        >{encoded}</textarea>
+        <button id="{btn_id}"
+            style="background:#1f77b4;color:white;border:none;padding:10px 20px;
+                   border-radius:6px;font-size:14px;cursor:pointer;width:100%;margin-top:4px;">
+            {label}
+        </button>
+        <script>
+        (function() {{
+            var btn = document.getElementById('{btn_id}');
+            var ta  = document.getElementById('{ta_id}');
+            btn.addEventListener('click', function() {{
+                var txt = ta.value;
+                function markDone() {{
+                    btn.innerText = '✅ Copied!';
+                    btn.style.background = '#2d6a2d';
+                    setTimeout(function() {{
+                        btn.innerText = '{label}';
+                        btn.style.background = '#1f77b4';
+                    }}, 2000);
+                }}
+                if (navigator.clipboard && navigator.clipboard.writeText) {{
+                    navigator.clipboard.writeText(txt).then(markDone).catch(function() {{
+                        ta.style.cssText = 'position:static;width:100%;height:2px;';
+                        ta.select();
+                        document.execCommand('copy');
+                        ta.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;';
+                        markDone();
+                    }});
+                }} else {{
+                    ta.style.cssText = 'position:static;width:100%;height:2px;';
+                    ta.select();
+                    document.execCommand('copy');
+                    ta.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;';
+                    markDone();
+                }}
+            }});
+        }})();
+        </script>
         """,
-        height=55,
+        height=60,
     )
 
 # ====================== SIDEBAR ======================
@@ -598,9 +616,24 @@ def is_valid_output(text):
     return text and isinstance(text, str) and len(text.strip()) > 100
 
 def render_output(text, is_prd):
-    """Render output in correct format per mode."""
+    """Render output — for 32k PRD mode uses a scrollable container to avoid
+    browser lag from rendering a 120k+ char markdown blob in one shot."""
     if is_prd:
-        st.markdown(text)
+        # Wrap in a fixed-height scrollable div so Streamlit doesn't try to
+        # paint the entire document height at once. User can scroll or copy.
+        char_count = len(text)
+        if char_count > 20000:
+            # Large output: show preview + word count, full text via copy button
+            st.info(
+                f"📄 Output is {char_count:,} characters (~{char_count//4:,} tokens). "
+                "Scroll below or use the Copy button to get the full text.",
+                icon="ℹ️"
+            )
+            # Render first ~8000 chars as preview so user can verify quality
+            preview = text[:8000] + "\n\n---\n*[Preview truncated — use Copy button for full output]*"
+            st.markdown(preview)
+        else:
+            st.markdown(text)
     else:
         st.code(text, language=None)
 
@@ -688,7 +721,10 @@ with col1:
                         st.success("✅ v1 ready!")
                         render_output(output, is_prd_mode or is_prd_exhaustive)
                         with st.expander("📋 Copy v1 for Grok", expanded=True):
-                            st.code(output, language=None)
+                            if is_prd_exhaustive:
+                                st.caption(f"Full output: {len(output):,} characters (~{len(output)//4:,} tokens)")
+                            else:
+                                st.code(output, language=None)
                             copy_button(output, "📋 Copy v1 to Clipboard")
                 except Exception as e:
                     err = str(e)
@@ -863,7 +899,10 @@ Create the strongest next version. Incorporate all the valuable patterns and ele
                     st.success(f"✅ v{next_v} generated!")
                     render_output(output, is_prd_mode or is_prd_exhaustive)
                     with st.expander(f"📋 Copy v{next_v} for Grok", expanded=True):
-                        st.code(output, language=None)
+                        if is_prd_exhaustive:
+                            st.caption(f"Full output: {len(output):,} characters (~{len(output)//4:,} tokens)")
+                        else:
+                            st.code(output, language=None)
                         copy_button(output, f"📋 Copy v{next_v} to Clipboard")
 
             except Exception as e:
