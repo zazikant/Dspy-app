@@ -1,6 +1,8 @@
 import streamlit as st
 import dspy
 import os
+import re
+import time
 
 st.set_page_config(
     page_title="Scene → Prompt Generator",
@@ -139,7 +141,7 @@ with st.sidebar:
     nvidia_model_options = {
         "Kimi K2.5 (32k output)": "nvidia_nim/moonshotai/kimi-k2.5",
         "MiniMax M2.5 (32k output)": "nvidia_nim/minimaxai/minimax-m2.5",
-        "GPT OSS 120B (32k output)": "nvidia_nim/openai/gpt-oss-120b",
+        "GPT OSS 20B (32k output)": "nvidia_nim/openai/gpt-oss-20b",
     }
 
     if is_nvidia:
@@ -622,6 +624,96 @@ def render_output(text, is_prd):
     else:
         st.code(text, language=None)
 
+# ====================== RETRY WRAPPER ======================
+# Mirrors ax-translator's adaptive backoff strategy (nvidia-client.ts:144-208,
+# page.tsx:727-786) but adapted for dspy.LM's higher-level call interface.
+#
+# Why this exists: NVIDIA NIM enforces per-minute / per-day rate limits.
+# Large 32k-output requests are the first to get throttled, and a single 429
+# used to kill the whole Exhaustive PRD round. ax-translator learned this
+# the hard way and solved it with three layered defenses:
+#
+#   1. Per-call retry with backoff   (nvidia-client.ts:158-202)
+#   2. Inter-chunk adaptive cooldown (page.tsx:741-786)
+#   3. Echo detection on retry       (translation-pipeline.ts:77)
+#
+# Since dspy.LM hides the raw HTTP layer, we wrap the whole `generator()`
+# call instead of the stream. The trade-off: each retry re-runs the full
+# chain-of-thought, which is expensive — so we cap retries at 3 and use
+# longer backoffs than ax-translator's 500ms (which sits on top of a
+# 10s-call ceiling).
+
+_RATE_LIMIT_RE = re.compile(r"rate.?limit|429|too many requests|quota|throttl|tokens per", re.I)
+_TRANSIENT_RE  = re.compile(r"timeout|connection.?reset|aborted|stream|502|503|504|server error", re.I)
+_EMPTY_RE      = re.compile(r"finish_reason.*length|truncat|max_tokens|empty content", re.I)
+
+
+def call_generator_with_retry(generator, lm, user_input, max_retries: int = 3, status=None):
+    """Run a dspy generator with rate-limit-aware retry + adaptive backoff.
+
+    Args:
+        generator: the dspy.Predict / dspy.ChainOfThought module
+        lm:        the dspy.LM bound via dspy.context
+        user_input: the user_directions string passed to the signature
+        max_retries: total attempts = max_retries + 1 (default 3 retries = 4 attempts)
+        status:     optional st.status / callable for live progress logging
+
+    Backoff schedule (seconds):
+        retry 1 → 5s   (transient hiccup)
+        retry 2 → 15s  (something is flaky)
+        retry 3 → 30s  (NVIDIA is rate-limiting us)
+        On detected 429/rate-limit/quota → force minimum 30s, 60s on last retry
+        On empty/truncated output       → treat as rate-limit (model budget exhausted)
+
+    Returns:
+        The model's `detailed_prompt` string on success.
+
+    Raises:
+        RuntimeError with the last error message after exhausting retries.
+    """
+    backoffs = [5, 15, 30]
+    last_err = None
+
+    for attempt in range(max_retries + 1):
+        attempt_label = f"Attempt {attempt + 1}/{max_retries + 1}"
+        if status:
+            status.update(label=f"🔄 {attempt_label}…")
+        try:
+            with dspy.context(lm=lm):
+                result = generator(user_directions=user_input)
+            output = result.detailed_prompt
+            if is_valid_output(output):
+                if status and attempt > 0:
+                    status.update(label=f"✅ Succeeded on {attempt_label}")
+                return output
+            last_err = "empty or truncated output"
+            if status:
+                status.update(label=f"⚠️ {attempt_label} returned {last_err}")
+        except Exception as e:
+            last_err = str(e)
+            if status:
+                status.update(label=f"⚠️ {attempt_label} error: {last_err[:120]}…")
+
+        if attempt >= max_retries:
+            break
+
+        is_rate_limit = bool(_RATE_LIMIT_RE.search(last_err)) or bool(_EMPTY_RE.search(last_err))
+        is_transient  = bool(_TRANSIENT_RE.search(last_err))
+        backoff = backoffs[min(attempt, len(backoffs) - 1)]
+        if is_rate_limit:
+            backoff = max(backoff, 30)
+            if attempt == max_retries - 1:
+                backoff = 60
+        elif is_transient:
+            backoff = max(backoff, 10)
+
+        reason = "rate-limit" if is_rate_limit else ("transient" if is_transient else "generic")
+        if status:
+            status.update(label=f"⏳ {attempt_label} failed ({reason}). Waiting {backoff}s…")
+        time.sleep(backoff)
+
+    raise RuntimeError(f"Generator failed after {max_retries + 1} attempts. Last error: {last_err}")
+
 # ====================== MAIN UI ======================
 if is_prd_mode or is_prd_exhaustive:
     st.subheader("1. Describe Your Software Feature or Problem")
@@ -683,37 +775,36 @@ with col1:
         elif generator is None:
             st.error(f"Generator error: {load_error}")
         else:
-            with st.spinner(f"Generating v1 with {selected_model_label}..."):
+            with st.status(f"Generating v1 with {selected_model_label}…", expanded=True) as status:
                 try:
-                    with dspy.context(lm=lm):
-                        result = generator(user_directions=user_input.strip())
-
-                    output = result.detailed_prompt
-
-                    if not is_valid_output(output):
-                        st.error(
-                            "⚠️ The model returned an empty or invalid response. "
-                            "Try switching to ChainOfThought mode in the sidebar, or try a different model."
-                        )
-                    else:
-                        state["original_input"] = user_input.strip()
-                        state["last_prompt"] = output
-                        state["prompt_history"] = [{
-                            "version": 1,
-                            "prompt": output,
-                            "feedback_used": "Initial generation — no Grok feedback yet"
-                        }]
-                        st.success("✅ v1 ready!")
-                        render_output(output, is_prd_mode or is_prd_exhaustive)
-                        with st.expander("📋 Copy v1 for Grok", expanded=True):
-                            st.code(output, language=None)
-                            copy_button(output, "📋 Copy v1 to Clipboard")
+                    output = call_generator_with_retry(
+                        generator, lm, user_input.strip(), max_retries=3, status=status
+                    )
                 except Exception as e:
                     err = str(e)
+                    status.update(label="❌ v1 failed", state="error")
                     if "401" in err or "AuthenticationError" in err or "User not found" in err:
                         st.error("❌ Invalid or expired API key. Please paste a fresh key in the sidebar and click Apply.")
+                    elif _RATE_LIMIT_RE.search(err):
+                        st.error(
+                            f"❌ Rate limited after 4 attempts (60s final backoff). "
+                            "Wait a minute and try again, or pick a different model."
+                        )
                     else:
-                        st.error(err)
+                        st.error(f"❌ {err}")
+                else:
+                    state["original_input"] = user_input.strip()
+                    state["last_prompt"] = output
+                    state["prompt_history"] = [{
+                        "version": 1,
+                        "prompt": output,
+                        "feedback_used": "Initial generation — no Grok feedback yet"
+                    }]
+                    status.update(label="✅ v1 ready", state="complete")
+                    render_output(output, is_prd_mode or is_prd_exhaustive)
+                    with st.expander("📋 Copy v1 for Grok", expanded=True):
+                        st.code(output, language=None)
+                        copy_button(output, "📋 Copy v1 to Clipboard")
 
 with col2:
     if st.button("🔄 Reset Everything", type="secondary", use_container_width=True):
@@ -805,7 +896,7 @@ if st.button(refine_label, type="primary", use_container_width=True):
         st.error("Paste Grok feedback first!")
     else:
         next_v = len(state["prompt_history"]) + 1
-        with st.spinner(f"Creating v{next_v} ..."):
+        with st.status(f"Creating v{next_v} …", expanded=True) as status:
             try:
                 if is_prd_exhaustive:
                     enhanced_input = f"""ORIGINAL PROBLEM:
@@ -859,35 +950,32 @@ Grok has repeatedly suggested the following improvements across feedback:
 
 Create the strongest next version. Incorporate all the valuable patterns and elements Grok has been emphasizing."""
 
-                with dspy.context(lm=lm):
-                    result = generator(user_directions=enhanced_input)
+                output = call_generator_with_retry(
+                    generator, lm, enhanced_input, max_retries=3, status=status
+                )
 
-                output = result.detailed_prompt
-
-                if not is_valid_output(output):
-                    st.error(
-                        f"⚠️ v{next_v} came back empty or malformed. "
-                        "This usually means the feedback contained too much review commentary and not enough architectural direction. "
-                        "Try stripping ratings/scores from the feedback and resubmitting, "
-                        "or switch to ChainOfThought mode in the sidebar."
-                    )
-                else:
-                    state["prompt_history"].append({
-                        "version": next_v,
-                        "prompt": output,
-                        "feedback_used": grok_feedback.strip()[:300] + "..."
-                    })
-                    state["last_prompt"] = output
-                    st.success(f"✅ v{next_v} generated!")
-                    render_output(output, is_prd_mode or is_prd_exhaustive)
-                    with st.expander(f"📋 Copy v{next_v} for Grok", expanded=True):
-                        st.code(output, language=None)
-                        copy_button(output, f"📋 Copy v{next_v} to Clipboard")
+                state["prompt_history"].append({
+                    "version": next_v,
+                    "prompt": output,
+                    "feedback_used": grok_feedback.strip()[:300] + "..."
+                })
+                state["last_prompt"] = output
+                status.update(label=f"✅ v{next_v} generated", state="complete")
+                render_output(output, is_prd_mode or is_prd_exhaustive)
+                with st.expander(f"📋 Copy v{next_v} for Grok", expanded=True):
+                    st.code(output, language=None)
+                    copy_button(output, f"📋 Copy v{next_v} to Clipboard")
 
             except Exception as e:
                     err = str(e)
+                    status.update(label=f"❌ v{next_v} failed", state="error")
                     if "401" in err or "AuthenticationError" in err or "User not found" in err:
                         st.error("❌ Invalid or expired API key. Please paste a fresh key in the sidebar and click Apply.")
+                    elif _RATE_LIMIT_RE.search(err):
+                        st.error(
+                            f"❌ Rate limited after 4 attempts. "
+                            "Wait a minute and try again, or pick a different model."
+                        )
                     else:
                         st.error(f"Error: {err}")
 
