@@ -4,6 +4,11 @@ import os
 import re
 import time
 
+from opencode_client import (
+    opencode_chat_stream_controlled as _opencode_chat,
+    OPENCODE_DEFAULT_MODEL as _OPENCODE_DEFAULT_MODEL,
+)
+
 st.set_page_config(
     page_title="Scene → Prompt Generator",
     page_icon="🎨",
@@ -85,41 +90,79 @@ with st.sidebar:
     st.divider()
 
     st.markdown("### 🔌 Provider")
-    provider = "NVIDIA NIM"
-
-    nvidia_key_input = st.text_input(
-        "NVIDIA NIM API Key",
-        type="password",
-        value=os.getenv("NVIDIA_NIM_API_KEY", ""),
-        help="Paste your NVIDIA NIM API key here."
-    )
-    if st.button("✅ Apply NVIDIA Key", type="primary", use_container_width=True):
-        if nvidia_key_input.strip():
-            os.environ["NVIDIA_NIM_API_KEY"] = nvidia_key_input.strip()
-            st.cache_resource.clear()
-            st.success("✅ NVIDIA Key applied")
-            st.rerun()
-        else:
-            st.error("Please enter your NVIDIA NIM API key.")
-
-    # ── Model lists ──────────────────────────────────────────
-    nvidia_model_options = {
-        "Nemotron 3 Super 120B (32k output, default)": "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
-        "GPT OSS 20B (32k output, fallback)": "nvidia_nim/openai/gpt-oss-20b",
-        "Custom Model": "custom",
-    }
-
-    selected_model_label = st.selectbox(
-        "Select NVIDIA NIM Model",
-        options=list(nvidia_model_options.keys()),
+    provider = st.radio(
+        "Select Provider",
+        options=["NVIDIA NIM", "OpenCode (GLM 5.1)"],
         index=0,
-        help="Nemotron 3 Super 120B is the primary; GPT OSS 20B is the fast fallback. Both support 32k output."
+        help="NVIDIA NIM: 32k output, Nemotron 3 Super 120B default. OpenCode: GLM 5.1 via opencode.ai gateway, thinking model."
     )
-    if selected_model_label == "Custom Model":
-        model_name = st.text_input("Custom Model Name", value="nvidia_nim/nvidia/nemotron-3-super-120b-a12b")
+
+    if provider == "NVIDIA NIM":
+        nvidia_key_input = st.text_input(
+            "NVIDIA NIM API Key",
+            type="password",
+            value=os.getenv("NVIDIA_NIM_API_KEY", ""),
+            help="Paste your NVIDIA NIM API key here."
+        )
+        if st.button("✅ Apply NVIDIA Key", type="primary", use_container_width=True):
+            if nvidia_key_input.strip():
+                os.environ["NVIDIA_NIM_API_KEY"] = nvidia_key_input.strip()
+                st.cache_resource.clear()
+                st.success("✅ NVIDIA Key applied")
+                st.rerun()
+            else:
+                st.error("Please enter your NVIDIA NIM API key.")
+        opencode_key_input = ""
+
+        nvidia_model_options = {
+            "Nemotron 3 Super 120B (32k output, default)": "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
+            "GPT OSS 20B (32k output, fallback)": "nvidia_nim/openai/gpt-oss-20b",
+            "Custom Model": "custom",
+        }
+        selected_model_label = st.selectbox(
+            "Select NVIDIA NIM Model",
+            options=list(nvidia_model_options.keys()),
+            index=0,
+            help="Nemotron 3 Super 120B is the primary; GPT OSS 20B is the fast fallback. Both support 32k output."
+        )
+        if selected_model_label == "Custom Model":
+            model_name = st.text_input("Custom Model Name", value="nvidia_nim/nvidia/nemotron-3-super-120b-a12b")
+        else:
+            model_name = nvidia_model_options[selected_model_label]
+        st.caption("⚡ 32,000 output token limit · Hosted on NVIDIA infrastructure")
     else:
-        model_name = nvidia_model_options[selected_model_label]
-    st.caption("⚡ 32,000 output token limit · Hosted on NVIDIA infrastructure")
+        # OpenCode (GLM 5.1)
+        nvidia_key_input = ""
+        opencode_key_input = st.text_input(
+            "OpenCode API Key",
+            type="password",
+            value=os.getenv("OPENCODE_API_KEY", ""),
+            help="Paste your OpenCode API key here. Get one at https://opencode.ai/"
+        )
+        if st.button("✅ Apply OpenCode Key", type="primary", use_container_width=True):
+            if opencode_key_input.strip():
+                os.environ["OPENCODE_API_KEY"] = opencode_key_input.strip()
+                st.cache_resource.clear()
+                st.success("✅ OpenCode Key applied")
+                st.rerun()
+            else:
+                st.error("Please enter your OpenCode API key.")
+
+        opencode_model_options = {
+            "GLM 5.1 (thinking, reasoning_effort=low)": "glm-5.1",
+            "Custom Model": "custom",
+        }
+        selected_model_label = st.selectbox(
+            "Select OpenCode Model",
+            options=list(opencode_model_options.keys()),
+            index=0,
+            help="GLM 5.1 is a thinking model — the opencode gateway requires reasoning_effort='low'."
+        )
+        if selected_model_label == "Custom Model":
+            model_name = st.text_input("Custom Model Name", value="glm-5.1")
+        else:
+            model_name = opencode_model_options[selected_model_label]
+        st.caption("🧠 GLM 5.3 thinking model via opencode.ai gateway · reasoning_effort=low")
 
     if st.button("✅ Apply Model", type="primary", use_container_width=True):
         st.cache_resource.clear()
@@ -172,28 +215,322 @@ else:
 # Streamlit's cache_resource fail with: "cannot pickle '_thread.RLock' object".
 # The function is cheap (no I/O, just class instantiation) so it's safe to call
 # on every rerun. LM init inside dspy.LM() is also lightweight.
-def get_generator(module_type: str, model_name: str, mode: str, api_key: str):
+#
+# Returns: (run_fn, module_or_None, load_error)
+#   - run_fn(user_input: str) -> str   — the unified callable the UI uses
+#   - module_or_None                  — the dspy module (NVIDIA only), for debugging
+#   - load_error: str | None          — set if init failed
+def get_generator(module_type: str, model_name: str, mode: str, api_key: str, provider: str):
     if not api_key:
-        return None, None, "No API key set."
+        return lambda u: (_ for _ in ()).throw(RuntimeError("No API key set.")), None, "No API key set."
+
+    is_opencode = provider == "OpenCode (GLM 5.1)"
 
     try:
-        # NVIDIA NIM only — OpenRouter has been removed.
-        # Default model pattern ported from tradingview-notes-app-nvidia/src/lib/brain/nvidia.ts:
-        #   - nvidia/nemotron-3-super-120b-a12b: ~4s TTFB, clean content
-        #   - stream=True: lets DSPy/litellm stream so we can abort early on timeout
-        #   - temperature=0.5 / top_p=1.0: NVIDIA defaults per the catalog
-        # Note: do NOT send `reasoning_effort` here — NVIDIA NIM rejects it for
-        # nemotron-3-super with litellm.UnsupportedParamsError. The model still
-        # reasons internally; we just can't control the effort level from litellm.
-        lm = dspy.LM(
-            model_name,
-            api_base="https://integrate.api.nvidia.com/v1",
-            api_key=api_key,
-            max_tokens=32000,
-            temperature=0.5,
-            top_p=1.0,
-            stream=True,
-        )
+        # ── IMAGE SIGNATURE ─────────────────────────────
+        if mode == "🎨 Image Prompt":
+            class SceneToImagePrompt(dspy.Signature):
+                """
+                You are an expert image prompt engineer specializing in turning loose or explicit user directions into ultra-detailed, vivid, high-quality prompts for Flux, SD3, SDXL, Pony, etc.
+
+ALWAYS follow these guidelines:
+                - Strong cinematic composition and camera angles
+                - Rich pose, body language, and clothing details (especially sheer/translucent fabrics)
+                - Seductive atmosphere with professional lighting, shadows, and skin texture
+                - Anatomically realistic + high-end erotic photography style
+                - Tasteful yet explicit when appropriate
+                - Output a ready-to-use, well-structured detailed prompt (80-200 words)
+                """
+                user_directions: str = dspy.InputField(desc="Original scene + previous prompt + all Grok feedback accumulated")
+                detailed_prompt: str = dspy.OutputField(desc="Final optimized image generation prompt")
+
+            sig = SceneToImagePrompt
+
+        # ── VIDEO SIGNATURE ──────────────────────────────
+        elif mode == "🎬 Video Scene Prompt":
+            class SceneToVideoPrompt(dspy.Signature):
+                """
+                You are an expert video prompt engineer specializing in turning loose or explicit user directions into ultra-detailed, motion-rich prompts for text-to-video models like Sora, Kling, Runway Gen-4, Wan, and Hailuo.
+
+ALWAYS follow these guidelines:
+                - Describe the shot type and camera movement (e.g. slow dolly-in, handheld tracking shot, bird's eye crane descent, Dutch angle push)
+                - Specify subject motion and body language over time (e.g. slowly turns head, fabric ripples as she walks, hair catches the breeze)
+                - Define the temporal arc: how the scene opens, progresses, and ends within the clip
+                - Include lighting evolution if relevant (e.g. golden hour light shifting to deep shadow, flickering neon reflecting off wet skin)
+                - Capture atmosphere, texture, and mood in motion (e.g. steam rising, fabric clinging, shallow depth of field pulling focus)
+                - Suggest clip duration and pacing feel (e.g. 6-second slow burn, 12-second continuous take, rhythmic cuts implied)
+                - Tasteful yet explicit motion details when appropriate
+                - Output a ready-to-use, well-structured detailed video prompt (80-220 words)
+                """
+                user_directions: str = dspy.InputField(desc="Original scene + previous prompt + all Grok feedback accumulated")
+                detailed_prompt: str = dspy.OutputField(desc="Final optimized video generation prompt")
+
+            sig = SceneToVideoPrompt
+
+        # ── PRD SIGNATURE ────────────────────────────────
+        elif mode == "🧠 Software PRD Prompt":
+            class SoftwareToPRDPrompt(dspy.Signature):
+                """
+                You are a senior software architect and technical product strategist. Your job is to take a raw feature idea or problem statement and produce a comprehensive, opinionated PRD meta-prompt — a living technical document that sharpens itself with every round of expert feedback.
+
+Think like someone who has seen every naive approach fail and every clever pattern succeed. Be decisive. Name the architecture. Commit to the stack. Call out the anti-patterns. And crucially: be willing to KILL components that don't survive scrutiny.
+
+THE THREE MARKERS — use them rigorously on every component, tool, and decision:
+
+  ✅ CONFIRMED ARCHITECTURE
+     — This pattern/component has been reinforced across multiple Grok rounds. It is locked in.
+       Never remove or question it in future versions. Build on it.
+
+  ⚠️ CHALLENGED
+     — Grok has questioned this component but hasn't killed it yet. It must be explicitly
+       justified with a concrete reason in this version, or promoted to ❌ REMOVED.
+       A ⚠️ CHALLENGED item that cannot be justified this round becomes ❌ REMOVED next round.
+
+  ❌ REMOVED
+     — Grok has repeatedly challenged this and it has failed to justify its existence.
+       Move it immediately to the ARCHITECTURE GRAVEYARD. It must NEVER reappear in any
+       future section of the PRD. Do not soften this — dead weight stays buried.
+
+ALWAYS structure your output as a complete PRD meta-prompt covering ALL of the following sections:
+
+1. PROBLEM STATEMENT
+   - Crisp one-paragraph definition of what is being solved and why naive approaches break down
+
+2. CORE ARCHITECTURE DECISION
+   - Name the primary architectural pattern chosen — mark it ✅ CONFIRMED if reinforced
+   - State WHY this pattern wins over the alternatives considered
+   - Explicitly name patterns that are ❌ REMOVED and must never return
+
+3. TECH STACK & TOOLING
+   - Every component must carry exactly one marker: ✅ CONFIRMED, ⚠️ CHALLENGED, or ❌ REMOVED
+   - ⚠️ CHALLENGED components must include a one-line justification or be killed this round
+   - ❌ REMOVED components must not appear here — they go only in the Graveyard
+
+4. DATA MODEL & FLOW
+   - Key entities and their relationships
+   - How data moves through the system end-to-end
+   - Any transformation or enrichment steps
+
+5. WORKFLOW & SEQUENCE
+   - Step-by-step operational flow a developer would implement
+   - Name every LangGraph node explicitly with edges (e.g. pdf_loader → ocr_detector → text_extractor → llm_extractor → validator → formatter)
+   - Define the LangGraph state object fields (TypedDict)
+   - Decision points, branching logic, error handling strategy
+
+6. INTERFACE CONTRACTS
+   - API shape with key endpoints or function signatures — mark any ⚠️ CHALLENGED
+   - Input validation strategy
+   - Response structure and error codes
+
+7. OPEN QUESTIONS & NEXT REFINEMENT TARGETS
+   - What is still unresolved
+   - Which ⚠️ CHALLENGED decisions Grok should stress-test next
+   - Hypotheses worth challenging
+
+8. ARCHITECTURE GRAVEYARD
+   - Every component ever marked ❌ REMOVED, listed with a one-line reason why it was killed
+   - This section only ever grows — nothing leaves the Graveyard
+   - Format: "❌ [Component name] — [reason killed]"
+   - If no components have been removed yet, write: "No casualties yet — first round."
+
+RULES:
+- A leaner PRD that makes fewer decisions confidently beats a bloated one that lists every option
+- If Grok challenged something and you cannot justify it in one concrete sentence, kill it
+- Every version must have FEWER ⚠️ CHALLENGED items than the previous version
+- The Graveyard must grow with each Grok round or you are not being decisive enough
+- Output the full PRD meta-prompt as a well-structured document (250-600 words)
+- It must be immediately usable as context for a developer or the next Grok refinement round
+
+TONE: Opinionated, specific, architect-grade. No vague platitudes. Every sentence either names something concrete or makes a decision.
+
+CRITICAL: You MUST always return the full PRD document. Never return None, empty string, or partial output.
+If the input contains ratings, scores, or review-style feedback mixed with architectural suggestions,
+extract ONLY the architectural suggestions and apply them. Ignore scores, praise, and meta-commentary.
+Focus solely on: what to add, what to kill, what to confirm, what to challenge.
+                """
+                user_directions: str = dspy.InputField(
+                    desc="Original feature/problem description + previous PRD meta-prompt + architectural feedback from Grok. NOTE: extract only architectural decisions from the feedback — ignore any ratings, scores, or review commentary."
+                )
+                detailed_prompt: str = dspy.OutputField(
+                    desc="Full PRD meta-prompt with ✅ CONFIRMED / ⚠️ CHALLENGED / ❌ REMOVED markers on every component, plus Architecture Graveyard. Must never be empty or None."
+                )
+
+            sig = SoftwareToPRDPrompt
+
+        # ── EXHAUSTIVE PRD SIGNATURE ─────────────────────
+        elif mode == "📐 Exhaustive PRD (32k)":
+            class ExhaustivePRDPrompt(dspy.Signature):
+                """
+You are a principal engineer writing a technical specification that a developer can implement without asking a single follow-up question. No prose. No story. No scene-setting. Every token spent must be a decision, a field name, a type, an edge, an error code, or a constraint.
+
+YOU HAVE A 32,000 TOKEN OUTPUT BUDGET. SPEND IT ON SPEC DEPTH, NOT NARRATIVE WIDTH.
+More tokens = more fields defined, more edge cases covered, more code written, more error paths named.
+NOT more sentences explaining what a database is.
+
+THE THREE MARKERS — apply to every component, library, pattern, and decision:
+  ✅ CONFIRMED — locked in, build on it, never re-debate
+  ⚠️ CHALLENGED — survives this round only with a one-line concrete justification; unkillable items become ❌ next round
+  ❌ REMOVED — dead, goes only in Graveyard, never referenced again
+
+GROK FEEDBACK RULE: If the input contains Grok feedback, extract ONLY architectural decisions.
+Strip all scores, ratings, praise, and meta-commentary. Apply only: what to add, kill, confirm, or challenge.
+
+═══════════════════════════════════════════════════════════════
+REQUIRED SECTIONS — write every one, every time, in full
+═══════════════════════════════════════════════════════════════
+
+## 1. PROBLEM STATEMENT [3-5 sentences MAX]
+- Sentence 1: What breaks without this system (specific failure mode, not generic pain)
+- Sentence 2: Why the naive/obvious approach fails (name the approach, name the failure)
+- Sentence 3: The exact constraint that makes this hard (scale, latency, consistency, auth, etc.)
+- Sentence 4-5 (optional): What "solved" looks like in measurable terms
+
+NO PARAGRAPHS. NO BACKGROUND. If it doesn't name a concrete failure or constraint, cut it.
+
+## 2. CORE ARCHITECTURE DECISION
+Format strictly as:
+  CHOSEN: [Pattern name] ✅ CONFIRMED — [one sentence: why it wins on the specific constraint above]
+  KILLED: ❌ [Alternative] — [one sentence: specific reason it fails on THIS problem]
+  KILLED: ❌ [Alternative] — [one sentence: specific reason it fails on THIS problem]
+  COMMITMENT: [The one architectural invariant that must never be violated]
+
+## 3. TECH STACK & TOOLING
+One line per component. Format:
+  [Library/Tool] vX.Y ✅/⚠️/❌ — [exact role in this system] | [why this over the obvious alternative]
+  ⚠️ items MUST include: "Survives because: [one concrete reason]"
+  ❌ items must NOT appear here — Graveyard only.
+
+## 4. DATA CONTRACTS & SCHEMAS
+Write the actual code. Every field must have:
+  - Name, type, constraints (min/max/regex/enum), nullable?, default, which component writes it, which reads it
+  Format as Python TypedDict or Pydantic BaseModel with Field() annotations.
+  No field descriptions in prose — annotate inline with comments.
+  Cover: primary state object, every entity passed between nodes/services, every DB table schema.
+
+## 5. COMPONENT MAP & EXECUTION FLOW
+First: ASCII node graph showing every component, every directed edge, every conditional branch.
+  Format: [node_name] --condition--> [next_node] or END
+  Every branch must be named. No implicit "then it continues".
+
+Then: For EACH node/service/stage, write a spec block:
+  NODE: node_name
+  INPUT:  field: type  # constraint
+  OUTPUT: field: type  # constraint
+  PROCESS:
+    1. [Exact operation — name the function/method/API call]
+    2. [Exact operation]
+    ...
+  ERROR HANDLING:
+    [ErrorType] → [exact action: retry N times / transition to X node / raise / log + skip]
+  STATE MUTATIONS: [list every GraphState field this node reads and writes]
+  INVARIANTS: [what must be true before and after this node runs]
+
+## 6. INTERFACE CONTRACTS
+Write actual signatures. No pseudocode — valid Python/TypeScript/SQL.
+  For every external interface:
+    - Full function/method signature with types
+    - Preconditions (what must be true before calling)
+    - Postconditions (what is guaranteed on success)
+    - Every exception/error type it raises and why
+    - HTTP: method, path, request schema, response schema, all error codes with meanings
+
+## 7. FAILURE MODES & RECOVERY PATHS
+Table format:
+  FAILURE | DETECTION | RECOVERY ACTION | STATE AFTER RECOVERY | PREVENTS
+  One row per distinct failure mode. Be exhaustive — at least 8 rows.
+  Include: auth expiry, rate limits, partial writes, schema mismatch, timeout, poison pill records, OOM.
+
+## 8. OPEN DECISIONS [max 5 items]
+Format strictly:
+  ❓ [Decision title]
+  Options: A) [option] — [tradeoff] | B) [option] — [tradeoff]
+  Kill if: [condition under which one option is immediately eliminated]
+  Decide by: [what test or metric resolves this]
+
+No open-ended questions. Every item must have a decision path.
+
+## 9. ARCHITECTURE GRAVEYARD
+  ❌ [Component] — [exact round killed] — [one-line kill reason]
+  This section only grows. Nothing leaves. No softening.
+  First round with no kills: write "No casualties — [name the weakest ⚠️ item and what would kill it]"
+
+═══════════════════════════════════════════════════════════
+ABSOLUTE RULES
+═══════════════════════════════════════════════════════════
+- Problem Statement ≤ 5 sentences. Violation = rewrite it.
+- Every node in section 5 gets a full spec block. No exceptions.
+- Every field in section 4 has a type and constraint. "string" alone is not a type.
+- No sentence starts with "This system", "The goal", "In order to", or "We need to".
+- No section may contain only prose where code or a table would serve.
+- ⚠️ CHALLENGED count must decrease each version. If it doesn't, you are not deciding.
+- NEVER return None, empty string, or truncated output.
+                """
+                user_directions: str = dspy.InputField(
+                    desc="Feature/problem description + optional previous PRD + optional Grok feedback. Extract only architectural decisions from feedback — strip all scores, ratings, and commentary."
+                )
+                detailed_prompt: str = dspy.OutputField(
+                    desc="Complete exhaustive PRD spec. Every node fully specced. Every field typed. Every failure mode named. Every interface contracted. ✅/⚠️/❌ on every decision. Graveyard at end. Never empty, never truncated."
+                )
+
+            sig = ExhaustivePRDPrompt
+
+        else:
+            return lambda u: (_ for _ in ()).throw(RuntimeError(f"Unknown mode: {mode}")), None, f"Unknown mode: {mode}"
+
+        # ── Build the unified run_fn ──────────────────────
+        if is_opencode:
+            # OpenCode: bypass dspy entirely. Build messages list from signature
+            # docstring + user_input. GLM 5.3 already thinks internally — using
+            # dspy.ChainOfThought on top would double-charge reasoning tokens.
+            system_prompt = (sig.__doc__ or "").strip()
+            if module_type == "ChainOfThought":
+                # Inject an explicit CoT prefix so GLM reasons before answering
+                system_prompt = (
+                    "Before producing your final answer, reason step by step about "
+                    "the requirements. Then output the final response in the exact "
+                    "format the system prompt specifies.\n\n" + system_prompt
+                )
+
+            def run_fn(user_input: str) -> str:
+                """Direct OpenCode call — no dspy, no litellm, no RLock."""
+                result = _opencode_chat(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_input},
+                    ],
+                    api_key=api_key,
+                    model=model_name,
+                    max_tokens=8192,
+                    temperature=0.7,
+                )
+                return result.content
+
+            return run_fn, None, None
+        else:
+            # NVIDIA NIM: dspy.LM + dspy.Predict / ChainOfThought
+            # - Drop `stream=True` — litellm's streaming path creates _thread.RLock
+            #   objects that fail to pickle across Streamlit reruns
+            # - Drop `reasoning_effort` — NVIDIA NIM rejects it for nemotron-3-super
+            lm = dspy.LM(
+                model_name,
+                api_base="https://integrate.api.nvidia.com/v1",
+                api_key=api_key,
+                max_tokens=32000,
+                temperature=0.5,
+                top_p=1.0,
+            )
+            # dspy.configure(lm=lm) sets a global LM and avoids dspy.context's
+            # thread-local locks. We never enter a dspy.context(...) block again.
+            dspy.configure(lm=lm)
+            module = dspy.ChainOfThought(sig) if module_type == "ChainOfThought" else dspy.Predict(sig)
+
+            def run_fn(user_input: str) -> str:
+                """dspy call — LM set globally via dspy.configure()."""
+                return module(user_directions=user_input).detailed_prompt
+
+            return run_fn, module, None
+    except Exception as e:
+        return lambda u: (_ for _ in ()).throw(e), None, str(e)
 
         # ── IMAGE SIGNATURE ─────────────────────────────
         if mode == "🎨 Image Prompt":
@@ -545,12 +882,16 @@ Focus solely on: what to add, what to kill, what to confirm, what to challenge.
         return None, None, str(e)
 
 # Pass provider + API key into cache key so any change busts the cache
-_api_key = os.getenv("NVIDIA_NIM_API_KEY", "")
-generator, lm, load_error = get_generator(
+if provider == "OpenCode (GLM 5.1)":
+    _api_key = os.getenv("OPENCODE_API_KEY", "")
+else:
+    _api_key = os.getenv("NVIDIA_NIM_API_KEY", "")
+run_fn, generator, load_error = get_generator(
     module_type,
     model_name,
     mode,
     _api_key,
+    provider,
 )
 
 # ====================== SESSION STATE ======================
@@ -629,15 +970,17 @@ def _classify_error(err_msg: str) -> str:
     return "fatal"
 
 
-def call_generator_with_retry(generator, lm, user_input, max_retries: int = 3, status=None):
-    """Run a dspy generator with classification-aware retry + adaptive backoff.
+def call_generator_with_retry(run_fn, user_input, max_retries: int = 3, status=None):
+    """Run a generator callable with classification-aware retry + adaptive backoff.
+
+    Provider-agnostic: works for both dspy modules (NVIDIA NIM) and the
+    raw OpenCode client. The `run_fn` is just `callable(str) -> str`.
 
     Ported from tradingview-notes-app-nvidia/src/lib/brain/nvidia.ts and
     ax-translator's adaptive cooldown (page.tsx:727-786).
 
     Args:
-        generator: the dspy.Predict / dspy.ChainOfThought module
-        lm:        the dspy.LM bound via dspy.context
+        run_fn:     callable(user_input: str) -> str  — the unified generator
         user_input: the user_directions string passed to the signature
         max_retries: total attempts = max_retries + 1 (default 3 retries = 4 attempts)
         status:     optional st.status for live progress logging
@@ -650,7 +993,7 @@ def call_generator_with_retry(generator, lm, user_input, max_retries: int = 3, s
         - 'transient'   → retry with 0.5s × attempt backoff (502/503/504/timeout)
 
     Returns:
-        The model's `detailed_prompt` string on success.
+        The model's output string on success.
 
     Raises:
         RuntimeError with the last error message after exhausting retries,
@@ -663,9 +1006,7 @@ def call_generator_with_retry(generator, lm, user_input, max_retries: int = 3, s
         if status:
             status.update(label=f"🔄 {attempt_label}…")
         try:
-            with dspy.context(lm=lm):
-                result = generator(user_directions=user_input)
-            output = result.detailed_prompt
+            output = run_fn(user_input)
             if is_valid_output(output):
                 if status and attempt > 0:
                     status.update(label=f"✅ Succeeded on {attempt_label}")
@@ -687,7 +1028,7 @@ def call_generator_with_retry(generator, lm, user_input, max_retries: int = 3, s
         if attempt >= max_retries:
             break
 
-        # Backoff by error kind (NVIDIA integrate API behavior):
+        # Backoff by error kind (NVIDIA integrate / OpenCode gateway behavior):
         if kind == "rate_limit":
             backoff = 60 if attempt == max_retries - 1 else 30
         elif kind == "empty":
@@ -755,17 +1096,19 @@ with col1:
     else:
         btn_label = "✨ Generate Initial Prompt (v1)"
     if st.button(btn_label, type="primary", use_container_width=True):
-        if not os.getenv("NVIDIA_NIM_API_KEY"):
+        if provider == "OpenCode (GLM 5.1)" and not os.getenv("OPENCODE_API_KEY"):
+            st.error("Please apply OpenCode API key first.")
+        elif provider == "NVIDIA NIM" and not os.getenv("NVIDIA_NIM_API_KEY"):
             st.error("Please apply NVIDIA NIM API key first.")
         elif not user_input.strip():
             st.error("Please describe your feature / scene!")
-        elif generator is None:
+        elif run_fn is None:
             st.error(f"Generator error: {load_error}")
         else:
             with st.status(f"Generating v1 with {selected_model_label}…", expanded=True) as status:
                 try:
                     output = call_generator_with_retry(
-                        generator, lm, user_input.strip(), max_retries=3, status=status
+                        run_fn, user_input.strip(), max_retries=3, status=status
                     )
                 except Exception as e:
                     err = str(e)
@@ -938,7 +1281,7 @@ Grok has repeatedly suggested the following improvements across feedback:
 Create the strongest next version. Incorporate all the valuable patterns and elements Grok has been emphasizing."""
 
                 output = call_generator_with_retry(
-                    generator, lm, enhanced_input, max_retries=3, status=status
+                    run_fn, enhanced_input, max_retries=3, status=status
                 )
 
                 state["prompt_history"].append({
