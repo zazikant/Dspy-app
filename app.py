@@ -129,18 +129,11 @@ with st.sidebar:
 
     # ── Model lists ──────────────────────────────────────────
     openrouter_model_options = {
-        "Qwen3.6 Plus Preview (Best overall)": "openrouter/qwen/qwen3.6-plus-preview:free",
-        "GLM 4.5 Air (Default)": "openrouter/z-ai/glm-4.5-air:free",
-        "Step 3.5 Flash (Fast & strong)": "openrouter/stepfun/step-3.5-flash:free",
-        "Arcee Trinity Large Preview (Creative)": "openrouter/arcee-ai/trinity-large-preview:free",
-        "MiniMax M2.5": "openrouter/minimax/minimax-m2.5:free",
-        "Llama 3.3 70B Instruct": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
+        "Qwen3.8 27B Free (reasoning + streaming)": "openrouter/qwen/qwen3.8-27b:free",
         "Custom Model": "custom"
     }
 
     nvidia_model_options = {
-        "Kimi K2.5 (32k output)": "nvidia_nim/moonshotai/kimi-k2.5",
-        "MiniMax M2.5 (32k output)": "nvidia_nim/minimaxai/minimax-m2.5",
         "GPT OSS 20B (32k output)": "nvidia_nim/openai/gpt-oss-20b",
     }
 
@@ -159,10 +152,11 @@ with st.sidebar:
         selected_model_label = st.selectbox(
             "Select Model",
             options=list(openrouter_model_options.keys()),
-            index=1,
+            index=0,
+            help="Only Qwen3.8 27B Free is enabled on OpenRouter — reasoning + streaming enabled."
         )
         if selected_model_label == "Custom Model":
-            model_name = st.text_input("Custom Model Name", value="openrouter/z-ai/glm-4.5-air:free")
+            model_name = st.text_input("Custom Model Name", value="openrouter/qwen/qwen3.8-27b:free")
         else:
             model_name = openrouter_model_options[selected_model_label]
 
@@ -227,15 +221,22 @@ def get_generator(module_type: str, model_name: str, mode: str, api_key: str, pr
                 api_base="https://integrate.api.nvidia.com/v1",
                 api_key=api_key,
                 max_tokens=32000,
-                temperature=0.7
+                temperature=0.7,
+                stream=True,
             )
         else:
+            # OpenRouter: enable reasoning + streaming for Qwen3.8 27B Free.
+            # Mirrors the raw API pattern:
+            #   reasoning: {"enabled": True}
+            #   stream:    true
             lm = dspy.LM(
                 model_name,
                 api_base="https://openrouter.ai/api/v1",
                 api_key=api_key,
                 max_tokens=2048,
-                temperature=0.7
+                temperature=0.7,
+                stream=True,
+                reasoning={"enabled": True},
             )
 
         # ── IMAGE SIGNATURE ─────────────────────────────
