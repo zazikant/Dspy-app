@@ -177,10 +177,11 @@ def get_generator(module_type: str, model_name: str, mode: str, api_key: str):
         # NVIDIA NIM only — OpenRouter has been removed.
         # Default model pattern ported from tradingview-notes-app-nvidia/src/lib/brain/nvidia.ts:
         #   - nvidia/nemotron-3-super-120b-a12b: ~4s TTFB, clean content
-        #   - reasoning_effort='low': suppresses heavy chain-of-thought so output
-        #     tokens go to the answer, not internal scratchpad
         #   - stream=True: lets DSPy/litellm stream so we can abort early on timeout
         #   - temperature=0.5 / top_p=1.0: NVIDIA defaults per the catalog
+        # Note: do NOT send `reasoning_effort` here — NVIDIA NIM rejects it for
+        # nemotron-3-super with litellm.UnsupportedParamsError. The model still
+        # reasons internally; we just can't control the effort level from litellm.
         lm = dspy.LM(
             model_name,
             api_base="https://integrate.api.nvidia.com/v1",
@@ -189,7 +190,6 @@ def get_generator(module_type: str, model_name: str, mode: str, api_key: str):
             temperature=0.5,
             top_p=1.0,
             stream=True,
-            reasoning_effort="low",
         )
 
         # ── IMAGE SIGNATURE ─────────────────────────────
