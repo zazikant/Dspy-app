@@ -520,14 +520,20 @@ ABSOLUTE RULES
                 temperature=0.5,
                 top_p=1.0,
             )
-            # dspy.configure(lm=lm) sets a global LM and avoids dspy.context's
-            # thread-local locks. We never enter a dspy.context(...) block again.
-            dspy.configure(lm=lm)
+            # Use `dspy.context(lm=lm)` inside run_fn (not dspy.configure) because
+            # dspy.configure binds dspy.settings to a specific thread. Streamlit
+            # reruns the script on different worker threads; configuring from one
+            # thread and reading from another raises:
+            #   "dspy.settings can only be changed by the thread that initially
+            #    configured it"
+            # Per-call context avoids that and is safe — no @st.cache_resource
+            # is involved anymore, so no RLock pickle issue.
             module = dspy.ChainOfThought(sig) if module_type == "ChainOfThought" else dspy.Predict(sig)
 
             def run_fn(user_input: str) -> str:
-                """dspy call — LM set globally via dspy.configure()."""
-                return module(user_directions=user_input).detailed_prompt
+                """dspy call — LM bound per-call via dspy.context."""
+                with dspy.context(lm=lm):
+                    return module(user_directions=user_input).detailed_prompt
 
             return run_fn, module, None
     except Exception as e:
