@@ -222,7 +222,8 @@ else:
 #   - load_error: str | None          — set if init failed
 def get_generator(module_type: str, model_name: str, mode: str, api_key: str, provider: str):
     if not api_key:
-        return lambda u: (_ for _ in ()).throw(RuntimeError("No API key set.")), None, "No API key set."
+        # Caller checks `if run_fn is None` and surfaces `load_error` to the UI.
+        return None, None, "No API key set."
 
     is_opencode = provider == "OpenCode (GLM 5.1)"
 
@@ -475,7 +476,7 @@ ABSOLUTE RULES
             sig = ExhaustivePRDPrompt
 
         else:
-            return lambda u: (_ for _ in ()).throw(RuntimeError(f"Unknown mode: {mode}")), None, f"Unknown mode: {mode}"
+            return None, None, f"Unknown mode: {mode}"
 
         # ── Build the unified run_fn ──────────────────────
         if is_opencode:
@@ -530,7 +531,7 @@ ABSOLUTE RULES
 
             return run_fn, module, None
     except Exception as e:
-        return lambda u: (_ for _ in ()).throw(e), None, str(e)
+        return None, None, str(e)
 
         # ── IMAGE SIGNATURE ─────────────────────────────
         if mode == "🎨 Image Prompt":
