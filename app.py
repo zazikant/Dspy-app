@@ -85,80 +85,41 @@ with st.sidebar:
     st.divider()
 
     st.markdown("### 🔌 Provider")
-    provider = st.selectbox(
-        "Select Provider",
-        options=["OpenRouter", "NVIDIA NIM"],
-        index=0,
-        help="OpenRouter uses free community models. NVIDIA NIM uses high-output models (32k tokens) — no API key required."
+    provider = "NVIDIA NIM"
+
+    nvidia_key_input = st.text_input(
+        "NVIDIA NIM API Key",
+        type="password",
+        value=os.getenv("NVIDIA_NIM_API_KEY", ""),
+        help="Paste your NVIDIA NIM API key here."
     )
-
-    is_nvidia = provider == "NVIDIA NIM"
-
-    # ── API Key (OpenRouter only) ────────────────────────────
-    if not is_nvidia:
-        api_key_input = st.text_input(
-            "OpenRouter API Key",
-            type="password",
-            value=os.getenv("OPENROUTER_API_KEY", ""),
-            help="Paste your OpenRouter API key here."
-        )
-        if st.button("✅ Apply API Key", type="primary", use_container_width=True):
-            if api_key_input.strip():
-                os.environ["OPENROUTER_API_KEY"] = api_key_input.strip()
-                st.cache_resource.clear()
-                st.success("✅ API Key applied")
-                st.rerun()
-            else:
-                st.error("Please enter an API key.")
-    else:
-        api_key_input = ""
-        nvidia_key_input = st.text_input(
-            "NVIDIA NIM API Key",
-            type="password",
-            value=os.getenv("NVIDIA_NIM_API_KEY", ""),
-            help="Paste your NVIDIA NIM API key here."
-        )
-        if st.button("✅ Apply NVIDIA Key", type="primary", use_container_width=True):
-            if nvidia_key_input.strip():
-                os.environ["NVIDIA_NIM_API_KEY"] = nvidia_key_input.strip()
-                st.cache_resource.clear()
-                st.success("✅ NVIDIA Key applied")
-                st.rerun()
-            else:
-                st.error("Please enter your NVIDIA NIM API key.")
+    if st.button("✅ Apply NVIDIA Key", type="primary", use_container_width=True):
+        if nvidia_key_input.strip():
+            os.environ["NVIDIA_NIM_API_KEY"] = nvidia_key_input.strip()
+            st.cache_resource.clear()
+            st.success("✅ NVIDIA Key applied")
+            st.rerun()
+        else:
+            st.error("Please enter your NVIDIA NIM API key.")
 
     # ── Model lists ──────────────────────────────────────────
-    openrouter_model_options = {
-        "Qwen3.8 27B Free (reasoning + streaming)": "openrouter/qwen/qwen3.8-27b:free",
-        "Custom Model": "custom"
-    }
-
     nvidia_model_options = {
-        "GPT OSS 20B (32k output)": "nvidia_nim/openai/gpt-oss-20b",
+        "Nemotron 3 Super 120B (32k output, default)": "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
+        "GPT OSS 20B (32k output, fallback)": "nvidia_nim/openai/gpt-oss-20b",
+        "Custom Model": "custom",
     }
 
-    if is_nvidia:
-        model_options = nvidia_model_options
-        selected_model_label = st.selectbox(
-            "Select NVIDIA NIM Model",
-            options=list(nvidia_model_options.keys()),
-            index=0,
-            help="All NVIDIA NIM models support up to 32,000 output tokens."
-        )
-        model_name = nvidia_model_options[selected_model_label]
-        st.caption("⚡ 32,000 output token limit · Hosted on NVIDIA infrastructure")
+    selected_model_label = st.selectbox(
+        "Select NVIDIA NIM Model",
+        options=list(nvidia_model_options.keys()),
+        index=0,
+        help="Nemotron 3 Super 120B is the primary; GPT OSS 20B is the fast fallback. Both support 32k output."
+    )
+    if selected_model_label == "Custom Model":
+        model_name = st.text_input("Custom Model Name", value="nvidia_nim/nvidia/nemotron-3-super-120b-a12b")
     else:
-        model_options = openrouter_model_options
-        selected_model_label = st.selectbox(
-            "Select Model",
-            options=list(openrouter_model_options.keys()),
-            index=0,
-            help="Only Qwen3.8 27B Free is enabled on OpenRouter — reasoning + streaming enabled."
-        )
-        if selected_model_label == "Custom Model":
-            model_name = st.text_input("Custom Model Name", value="openrouter/qwen/qwen3.8-27b:free")
-        else:
-            model_name = openrouter_model_options[selected_model_label]
+        model_name = nvidia_model_options[selected_model_label]
+    st.caption("⚡ 32,000 output token limit · Hosted on NVIDIA infrastructure")
 
     if st.button("✅ Apply Model", type="primary", use_container_width=True):
         st.cache_resource.clear()
@@ -208,36 +169,28 @@ else:
 # ====================== DSPy SETUP ======================
 # API key is now part of the cache key — changing it busts the cache automatically
 @st.cache_resource(show_spinner="Loading DSPy...")
-def get_generator(module_type: str, model_name: str, mode: str, api_key: str, provider: str):
-    is_nvidia = provider == "NVIDIA NIM"
-
+def get_generator(module_type: str, model_name: str, mode: str, api_key: str):
     if not api_key:
         return None, None, "No API key set."
 
     try:
-        if is_nvidia:
-            lm = dspy.LM(
-                model_name,
-                api_base="https://integrate.api.nvidia.com/v1",
-                api_key=api_key,
-                max_tokens=32000,
-                temperature=0.7,
-                stream=True,
-            )
-        else:
-            # OpenRouter: enable reasoning + streaming for Qwen3.8 27B Free.
-            # Mirrors the raw API pattern:
-            #   reasoning: {"enabled": True}
-            #   stream:    true
-            lm = dspy.LM(
-                model_name,
-                api_base="https://openrouter.ai/api/v1",
-                api_key=api_key,
-                max_tokens=2048,
-                temperature=0.7,
-                stream=True,
-                reasoning={"enabled": True},
-            )
+        # NVIDIA NIM only — OpenRouter has been removed.
+        # Default model pattern ported from tradingview-notes-app-nvidia/src/lib/brain/nvidia.ts:
+        #   - nvidia/nemotron-3-super-120b-a12b: ~4s TTFB, clean content
+        #   - reasoning_effort='low': suppresses heavy chain-of-thought so output
+        #     tokens go to the answer, not internal scratchpad
+        #   - stream=True: lets DSPy/litellm stream so we can abort early on timeout
+        #   - temperature=0.5 / top_p=1.0: NVIDIA defaults per the catalog
+        lm = dspy.LM(
+            model_name,
+            api_base="https://integrate.api.nvidia.com/v1",
+            api_key=api_key,
+            max_tokens=32000,
+            temperature=0.5,
+            top_p=1.0,
+            stream=True,
+            reasoning_effort="low",
+        )
 
         # ── IMAGE SIGNATURE ─────────────────────────────
         if mode == "🎨 Image Prompt":
@@ -589,13 +542,12 @@ Focus solely on: what to add, what to kill, what to confirm, what to challenge.
         return None, None, str(e)
 
 # Pass provider + API key into cache key so any change busts the cache
-_api_key = os.getenv("NVIDIA_NIM_API_KEY", "") if is_nvidia else os.getenv("OPENROUTER_API_KEY", "")
+_api_key = os.getenv("NVIDIA_NIM_API_KEY", "")
 generator, lm, load_error = get_generator(
     module_type,
     model_name,
     mode,
     _api_key,
-    provider
 )
 
 # ====================== SESSION STATE ======================
@@ -644,35 +596,63 @@ def render_output(text, is_prd):
 # longer backoffs than ax-translator's 500ms (which sits on top of a
 # 10s-call ceiling).
 
-_RATE_LIMIT_RE = re.compile(r"rate.?limit|429|too many requests|quota|throttl|tokens per", re.I)
-_TRANSIENT_RE  = re.compile(r"timeout|connection.?reset|aborted|stream|502|503|504|server error", re.I)
-_EMPTY_RE      = re.compile(r"finish_reason.*length|truncat|max_tokens|empty content", re.I)
+# ─── Retryable-error classification ──────────────────────────────────────────
+# Ported from tradingview-notes-app-nvidia/src/lib/brain/nvidia.ts:52-61.
+# Only retryable errors are retried; everything else surfaces to the UI
+# immediately so the user sees a real error instead of burning time on
+# backoffs that won't help.
+_RETRYABLE_HTTP  = {429, 500, 502, 503, 504}
+_RETRYABLE_CODES = {"ECONNRESET", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"}
+_RETRYABLE_NAMES = {"APIConnectionError", "APITimeoutError", "ConnectionError"}
+_RETRYABLE_MSG   = re.compile(r"rate.?limit|too many requests|timeout|econnreset", re.I)
+
+# Pre-compiled error text patterns for snappy matching
+_RATE_LIMIT_TEXT = re.compile(r"rate.?limit|429|too many requests|quota|throttl", re.I)
+_TRANSIENT_TEXT  = re.compile(r"timeout|connection.?reset|aborted|stream|502|503|504|server error", re.I)
+_EMPTY_TEXT      = re.compile(r"finish_reason.*length|truncat|max_tokens|empty content", re.I)
+_AUTH_TEXT       = re.compile(r"401|403|unauthor|invalid.*key|expired|user not found", re.I)
+
+
+def _classify_error(err_msg: str) -> str:
+    """Return one of: 'rate_limit', 'transient', 'auth', 'empty', 'fatal'."""
+    if _AUTH_TEXT.search(err_msg):
+        return "auth"
+    if _RATE_LIMIT_TEXT.search(err_msg):
+        return "rate_limit"
+    if _EMPTY_TEXT.search(err_msg):
+        return "empty"          # likely max_tokens/finish_reason=length
+    if _TRANSIENT_TEXT.search(err_msg):
+        return "transient"
+    return "fatal"
 
 
 def call_generator_with_retry(generator, lm, user_input, max_retries: int = 3, status=None):
-    """Run a dspy generator with rate-limit-aware retry + adaptive backoff.
+    """Run a dspy generator with classification-aware retry + adaptive backoff.
+
+    Ported from tradingview-notes-app-nvidia/src/lib/brain/nvidia.ts and
+    ax-translator's adaptive cooldown (page.tsx:727-786).
 
     Args:
         generator: the dspy.Predict / dspy.ChainOfThought module
         lm:        the dspy.LM bound via dspy.context
         user_input: the user_directions string passed to the signature
         max_retries: total attempts = max_retries + 1 (default 3 retries = 4 attempts)
-        status:     optional st.status / callable for live progress logging
+        status:     optional st.status for live progress logging
 
-    Backoff schedule (seconds):
-        retry 1 → 5s   (transient hiccup)
-        retry 2 → 15s  (something is flaky)
-        retry 3 → 30s  (NVIDIA is rate-limiting us)
-        On detected 429/rate-limit/quota → force minimum 30s, 60s on last retry
-        On empty/truncated output       → treat as rate-limit (model budget exhausted)
+    Error classification (see _classify_error):
+        - 'auth'        → no retry, surface immediately (wrong key)
+        - 'fatal'       → no retry, surface immediately (4xx other than 429, bad request)
+        - 'rate_limit'  → retry with 30s/60s backoff (NVIDIA free tier quota)
+        - 'empty'       → retry with 15s backoff (model hit max_tokens mid-response)
+        - 'transient'   → retry with 0.5s × attempt backoff (502/503/504/timeout)
 
     Returns:
         The model's `detailed_prompt` string on success.
 
     Raises:
-        RuntimeError with the last error message after exhausting retries.
+        RuntimeError with the last error message after exhausting retries,
+        or surfaces auth/fatal errors immediately without retrying.
     """
-    backoffs = [5, 15, 30]
     last_err = None
 
     for attempt in range(max_retries + 1):
@@ -688,29 +668,34 @@ def call_generator_with_retry(generator, lm, user_input, max_retries: int = 3, s
                     status.update(label=f"✅ Succeeded on {attempt_label}")
                 return output
             last_err = "empty or truncated output"
+            kind = "empty"
             if status:
                 status.update(label=f"⚠️ {attempt_label} returned {last_err}")
         except Exception as e:
             last_err = str(e)
+            kind = _classify_error(last_err)
             if status:
-                status.update(label=f"⚠️ {attempt_label} error: {last_err[:120]}…")
+                status.update(label=f"⚠️ {attempt_label} [{kind}]: {last_err[:120]}…")
+
+        # Don't retry auth/fatal — surface immediately.
+        if kind in ("auth", "fatal"):
+            raise RuntimeError(last_err)
 
         if attempt >= max_retries:
             break
 
-        is_rate_limit = bool(_RATE_LIMIT_RE.search(last_err)) or bool(_EMPTY_RE.search(last_err))
-        is_transient  = bool(_TRANSIENT_RE.search(last_err))
-        backoff = backoffs[min(attempt, len(backoffs) - 1)]
-        if is_rate_limit:
-            backoff = max(backoff, 30)
-            if attempt == max_retries - 1:
-                backoff = 60
-        elif is_transient:
-            backoff = max(backoff, 10)
+        # Backoff by error kind (NVIDIA integrate API behavior):
+        if kind == "rate_limit":
+            backoff = 60 if attempt == max_retries - 1 else 30
+        elif kind == "empty":
+            backoff = 15
+        elif kind == "transient":
+            backoff = 0.5 * (attempt + 1)   # 0.5s, 1s, 1.5s
+        else:
+            backoff = 2
 
-        reason = "rate-limit" if is_rate_limit else ("transient" if is_transient else "generic")
         if status:
-            status.update(label=f"⏳ {attempt_label} failed ({reason}). Waiting {backoff}s…")
+            status.update(label=f"⏳ {attempt_label} failed ({kind}). Waiting {backoff}s…")
         time.sleep(backoff)
 
     raise RuntimeError(f"Generator failed after {max_retries + 1} attempts. Last error: {last_err}")
@@ -767,10 +752,8 @@ with col1:
     else:
         btn_label = "✨ Generate Initial Prompt (v1)"
     if st.button(btn_label, type="primary", use_container_width=True):
-        if is_nvidia and not os.getenv("NVIDIA_NIM_API_KEY"):
+        if not os.getenv("NVIDIA_NIM_API_KEY"):
             st.error("Please apply NVIDIA NIM API key first.")
-        elif not is_nvidia and not os.getenv("OPENROUTER_API_KEY"):
-            st.error("Please apply OpenRouter API key first.")
         elif not user_input.strip():
             st.error("Please describe your feature / scene!")
         elif generator is None:
@@ -786,7 +769,7 @@ with col1:
                     status.update(label="❌ v1 failed", state="error")
                     if "401" in err or "AuthenticationError" in err or "User not found" in err:
                         st.error("❌ Invalid or expired API key. Please paste a fresh key in the sidebar and click Apply.")
-                    elif _RATE_LIMIT_RE.search(err):
+                    elif _RATE_LIMIT_TEXT.search(err):
                         st.error(
                             f"❌ Rate limited after 4 attempts (60s final backoff). "
                             "Wait a minute and try again, or pick a different model."
@@ -1016,7 +999,7 @@ mode_label_map = {
     "🧠 Software PRD Prompt": "PRD — ✅ locks in · ⚠️ on trial · ❌ buried",
     "📐 Exhaustive PRD (32k)": "Exhaustive PRD — every node · every edge · Graveyard grows forever"
 }
-token_note = "32k output tokens" if is_nvidia else "2k output tokens"
+token_note = "32k output tokens"
 st.caption(
     f"Mode: {mode_label_map[mode]} • {provider} · {selected_model_label} ({token_note}) + Grok manual refinement • "
     "Graveyard only grows · Stack only shrinks · Confidence compounds"
