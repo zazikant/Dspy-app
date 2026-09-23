@@ -167,8 +167,11 @@ else:
     st.markdown("Ultra-detailed prompts for Flux / SD3 / SDXL + Grok-powered iterative refinement")
 
 # ====================== DSPy SETUP ======================
-# API key is now part of the cache key — changing it busts the cache automatically
-@st.cache_resource(show_spinner="Loading DSPy...")
+# NOTE: do NOT use @st.cache_resource here. dspy.ChainOfThought / dspy.Predict
+# carry internal _thread.RLock objects that cannot be pickled, which makes
+# Streamlit's cache_resource fail with: "cannot pickle '_thread.RLock' object".
+# The function is cheap (no I/O, just class instantiation) so it's safe to call
+# on every rerun. LM init inside dspy.LM() is also lightweight.
 def get_generator(module_type: str, model_name: str, mode: str, api_key: str):
     if not api_key:
         return None, None, "No API key set."
