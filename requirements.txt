@@ -1,2 +1,2 @@
-streamlit
-dspy-ai
+streamlit>=1.39,<2
+dspy-ai>=2.6.27,<3
