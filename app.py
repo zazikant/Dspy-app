@@ -8,6 +8,12 @@ from opencode_client import (
     opencode_chat_stream_controlled as _opencode_chat,
     OPENCODE_DEFAULT_MODEL as _OPENCODE_DEFAULT_MODEL,
 )
+from nvidia_client import (
+    nvidia_chat_stream_controlled as _nvidia_chat,
+    NVIDIA_DEFAULT_MODEL as _NVIDIA_DEFAULT_MODEL,
+    MODEL_MAX_TOKENS_CAP as _NVIDIA_MODEL_MAX_TOKENS,
+    DEFAULT_MAX_CONTINUATIONS as _NVIDIA_MAX_CONTINUATIONS,
+)
 
 st.set_page_config(
     page_title="Scene → Prompt Generator",
@@ -94,7 +100,7 @@ with st.sidebar:
         "Select Provider",
         options=["NVIDIA NIM", "OpenCode (GLM 5.1)"],
         index=0,
-        help="NVIDIA NIM: 32k output, Nemotron 3 Super 120B default. OpenCode: GLM 5.1 via opencode.ai gateway, thinking model."
+        help="NVIDIA NIM: gpt-oss-20b with auto-continue (up to 32k output via chained calls). OpenCode: GLM 5.1 via opencode.ai gateway, thinking model."
     )
 
     if provider == "NVIDIA NIM":
@@ -115,21 +121,20 @@ with st.sidebar:
         opencode_key_input = ""
 
         nvidia_model_options = {
-            "Nemotron 3 Super 120B (32k output, default)": "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
-            "GPT OSS 20B (32k output, fallback)": "nvidia_nim/openai/gpt-oss-20b",
+            "GPT OSS 20B (32k output via auto-continue, default)": "nvidia_nim/openai/gpt-oss-20b",
             "Custom Model": "custom",
         }
         selected_model_label = st.selectbox(
             "Select NVIDIA NIM Model",
             options=list(nvidia_model_options.keys()),
             index=0,
-            help="Nemotron 3 Super 120B is the primary; GPT OSS 20B is the fast fallback. Both support 32k output."
+            help="GPT OSS 20B has a 4096-token per-call limit; auto-continue chains up to 8 calls (7 continuations) to achieve ~32k tokens of effective output capacity."
         )
         if selected_model_label == "Custom Model":
-            model_name = st.text_input("Custom Model Name", value="nvidia_nim/nvidia/nemotron-3-super-120b-a12b")
+            model_name = st.text_input("Custom Model Name", value="nvidia_nim/openai/gpt-oss-20b")
         else:
             model_name = nvidia_model_options[selected_model_label]
-        st.caption("⚡ 32,000 output token limit · Hosted on NVIDIA infrastructure")
+        st.caption("⚡ 4,096 tokens/call × 8 rounds (auto-continue) = ~32K output · openai/gpt-oss-20b")
     else:
         # OpenCode (GLM 5.1)
         nvidia_key_input = ""
@@ -203,7 +208,7 @@ elif is_prd_exhaustive:
         "No token limits. Every node, every edge, every interface contract written in full. "
         "The Architecture Graveyard grows without bound. "
         "Designed for any architecture — microservices, agent pipelines, event-driven systems, ETL, web apps, and more. "
-        "**Requires NVIDIA NIM (32k output).** Each Grok round expands depth — nothing is summarised, everything is spelled out."
+        "**Requires NVIDIA NIM (gpt-oss-20b with auto-continue).** Each Grok round expands depth — nothing is summarised, everything is spelled out."
     )
 else:
     st.title("🎨 Scene to Image Prompt Generator")
@@ -479,19 +484,27 @@ ABSOLUTE RULES
             return None, None, f"Unknown mode: {mode}"
 
         # ── Build the unified run_fn ──────────────────────
-        if is_opencode:
-            # OpenCode: bypass dspy entirely. Build messages list from signature
-            # docstring + user_input. GLM 5.3 already thinks internally — using
-            # dspy.ChainOfThought on top would double-charge reasoning tokens.
-            system_prompt = (sig.__doc__ or "").strip()
-            if module_type == "ChainOfThought":
-                # Inject an explicit CoT prefix so GLM reasons before answering
-                system_prompt = (
-                    "Before producing your final answer, reason step by step about "
-                    "the requirements. Then output the final response in the exact "
-                    "format the system prompt specifies.\n\n" + system_prompt
-                )
+        # Both NVIDIA NIM and OpenCode now bypass dspy.LM and use raw streaming
+        # clients directly. This gives us full control over finish_reason capture
+        # and auto-continue on truncation — dspy.LM hides the raw HTTP layer and
+        # doesn't expose finish_reason, so auto-continue is impossible through it.
+        #
+        # The DSPy signatures above are still used to DEFINE the system prompt
+        # (via sig.__doc__), but the actual LLM call is made by nvidia_client.py
+        # or opencode_client.py — both of which capture finish_reason from the
+        # SSE stream and auto-continue when the model hits max_tokens.
+        system_prompt = (sig.__doc__ or "").strip()
+        if module_type == "ChainOfThought":
+            # Inject an explicit CoT prefix so the model reasons before answering.
+            # (dspy.ChainOfThought would normally do this internally, but since
+            # we bypass dspy for the actual call, we replicate the prefix here.)
+            system_prompt = (
+                "Before producing your final answer, reason step by step about "
+                "the requirements. Then output the final response in the exact "
+                "format the system prompt specifies.\n\n" + system_prompt
+            )
 
+        if is_opencode:
             def run_fn(user_input: str) -> str:
                 """Direct OpenCode call — no dspy, no litellm, no RLock."""
                 result = _opencode_chat(
@@ -508,34 +521,27 @@ ABSOLUTE RULES
 
             return run_fn, None, None
         else:
-            # NVIDIA NIM: dspy.LM + dspy.Predict / ChainOfThought
-            # - Drop `stream=True` — litellm's streaming path creates _thread.RLock
-            #   objects that fail to pickle across Streamlit reruns
-            # - Drop `reasoning_effort` — NVIDIA NIM rejects it for nemotron-3-super
-            lm = dspy.LM(
-                model_name,
-                api_base="https://integrate.api.nvidia.com/v1",
-                api_key=api_key,
-                max_tokens=32000,
-                temperature=0.5,
-                top_p=1.0,
-            )
-            # Use `dspy.context(lm=lm)` inside run_fn (not dspy.configure) because
-            # dspy.configure binds dspy.settings to a specific thread. Streamlit
-            # reruns the script on different worker threads; configuring from one
-            # thread and reading from another raises:
-            #   "dspy.settings can only be changed by the thread that initially
-            #    configured it"
-            # Per-call context avoids that and is safe — no @st.cache_resource
-            # is involved anymore, so no RLock pickle issue.
-            module = dspy.ChainOfThought(sig) if module_type == "ChainOfThought" else dspy.Predict(sig)
-
+            # NVIDIA NIM: raw streaming client with auto-continue.
+            # gpt-oss-20b has a 4096-token per-call limit; nvidia_client.py
+            # auto-continues up to 7 times (8 total calls × 4096 = ~32K tokens)
+            # when finish_reason === 'length', producing the full 32k output
+            # the UI advertises.
             def run_fn(user_input: str) -> str:
-                """dspy call — LM bound per-call via dspy.context."""
-                with dspy.context(lm=lm):
-                    return module(user_directions=user_input).detailed_prompt
+                """Direct NVIDIA call — raw streaming with auto-continue."""
+                result = _nvidia_chat(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_input},
+                    ],
+                    api_key=api_key,
+                    model=model_name,
+                    max_tokens=_NVIDIA_MODEL_MAX_TOKENS,
+                    temperature=0.5,
+                    top_p=1.0,
+                )
+                return result.content
 
-            return run_fn, module, None
+            return run_fn, None, None
     except Exception as e:
         return None, None, str(e)
 
@@ -1060,7 +1066,7 @@ if is_prd_mode or is_prd_exhaustive:
             "The generator produces a **fully exhaustive PRD**: every component named and described, "
             "every flow and decision mapped, full data schemas and interface contracts, and an Architecture Graveyard "
             "that only grows. Each Grok round makes the document **longer and more precise** — nothing is summarised, "
-            "nothing is dropped. Recommended with NVIDIA NIM for the full 32k output budget."
+            "nothing is dropped. Recommended with NVIDIA NIM (gpt-oss-20b auto-continue) for the full 32k output budget."
         )
     else:
         st.markdown(
