@@ -98,9 +98,9 @@ with st.sidebar:
     st.markdown("### 🔌 Provider")
     provider = st.radio(
         "Select Provider",
-        options=["NVIDIA NIM", "OpenCode (GLM 5.1)"],
+        options=["NVIDIA NIM", "OpenCode (GLM 5.3)"],
         index=0,
-        help="NVIDIA NIM: gpt-oss-20b with auto-continue (up to 32k output via chained calls). OpenCode: GLM 5.1 via opencode.ai gateway, thinking model."
+        help="NVIDIA NIM: gpt-oss-20b with auto-continue (up to 32k output via chained calls). OpenCode: GLM 5.3 via opencode.ai gateway, thinking model."
     )
 
     if provider == "NVIDIA NIM":
@@ -136,7 +136,7 @@ with st.sidebar:
             model_name = nvidia_model_options[selected_model_label]
         st.caption("⚡ 4,096 tokens/call × 8 rounds (auto-continue) = ~32K output · openai/gpt-oss-20b")
     else:
-        # OpenCode (GLM 5.1)
+        # OpenCode (GLM 5.3)
         nvidia_key_input = ""
         opencode_key_input = st.text_input(
             "OpenCode API Key",
@@ -154,17 +154,17 @@ with st.sidebar:
                 st.error("Please enter your OpenCode API key.")
 
         opencode_model_options = {
-            "GLM 5.1 (thinking, reasoning_effort=low)": "glm-5.1",
+            "GLM 5.3 (thinking, reasoning_effort=low)": "glm-5.3",
             "Custom Model": "custom",
         }
         selected_model_label = st.selectbox(
             "Select OpenCode Model",
             options=list(opencode_model_options.keys()),
             index=0,
-            help="GLM 5.1 is a thinking model — the opencode gateway requires reasoning_effort='low'."
+            help="GLM 5.3 is a thinking model — the opencode gateway requires reasoning_effort='low'."
         )
         if selected_model_label == "Custom Model":
-            model_name = st.text_input("Custom Model Name", value="glm-5.1")
+            model_name = st.text_input("Custom Model Name", value="glm-5.3")
         else:
             model_name = opencode_model_options[selected_model_label]
         st.caption("🧠 GLM 5.3 thinking model via opencode.ai gateway · reasoning_effort=low")
@@ -230,7 +230,7 @@ def get_generator(module_type: str, model_name: str, mode: str, api_key: str, pr
         # Caller checks `if run_fn is None` and surfaces `load_error` to the UI.
         return None, None, "No API key set."
 
-    is_opencode = provider == "OpenCode (GLM 5.1)"
+    is_opencode = provider == "OpenCode (GLM 5.3)"
 
     try:
         # ── IMAGE SIGNATURE ─────────────────────────────
@@ -895,7 +895,7 @@ Focus solely on: what to add, what to kill, what to confirm, what to challenge.
         return None, None, str(e)
 
 # Pass provider + API key into cache key so any change busts the cache
-if provider == "OpenCode (GLM 5.1)":
+if provider == "OpenCode (GLM 5.3)":
     _api_key = os.getenv("OPENCODE_API_KEY", "")
 else:
     _api_key = os.getenv("NVIDIA_NIM_API_KEY", "")
@@ -1109,7 +1109,7 @@ with col1:
     else:
         btn_label = "✨ Generate Initial Prompt (v1)"
     if st.button(btn_label, type="primary", use_container_width=True):
-        if provider == "OpenCode (GLM 5.1)" and not os.getenv("OPENCODE_API_KEY"):
+        if provider == "OpenCode (GLM 5.3)" and not os.getenv("OPENCODE_API_KEY"):
             st.error("Please apply OpenCode API key first.")
         elif provider == "NVIDIA NIM" and not os.getenv("NVIDIA_NIM_API_KEY"):
             st.error("Please apply NVIDIA NIM API key first.")

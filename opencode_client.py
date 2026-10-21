@@ -2,13 +2,13 @@
 OpenCode LLM client — streaming chat completions via the OpenCode gateway.
 
 Python port of `src/lib/brain/opencode.ts` from zazikant/tradingview-notes-app
-(the GLM-5.1 reference implementation).
+(the GLM-5.3 reference implementation).
 
 Required env vars:
     OPENCODE_API_KEY   — your OpenCode API key (from https://opencode.ai/)
 
 Gateway: https://opencode.ai/zen/go/v1/chat/completions
-Model:   glm-5.1 (alias — currently serves GLM 5.3 thinking model)
+Model:   glm-5.3 (GLM 5.3 thinking model)
 
 CRITICAL: GLM 5.3 is a thinking-only model. We MUST send reasoning_effort:'low'
 to keep the reasoning overhead minimal while still ensuring the final answer
@@ -36,7 +36,7 @@ from typing import Callable, Optional
 import requests
 
 OPENCODE_GATEWAY = "https://opencode.ai/zen/go/v1/chat/completions"
-OPENCODE_DEFAULT_MODEL = "glm-5.1"
+OPENCODE_DEFAULT_MODEL = "glm-5.3"
 OPENCODE_DEFAULT_TIMEOUT_S = 55.0
 OPENCODE_DEFAULT_TEMPERATURE = 0.7
 OPENCODE_DEFAULT_MAX_TOKENS = 2048
