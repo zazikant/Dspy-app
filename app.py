@@ -14,6 +14,12 @@ from nvidia_client import (
     MODEL_MAX_TOKENS_CAP as _NVIDIA_MODEL_MAX_TOKENS,
     DEFAULT_MAX_CONTINUATIONS as _NVIDIA_MAX_CONTINUATIONS,
 )
+from ax_pipeline import (
+    make_call_llm,
+    run_quality_gate,
+    score_to_100,
+    VALIDATION_THRESHOLD,
+)
 
 st.set_page_config(
     page_title="Scene → Prompt Generator",
@@ -907,6 +913,11 @@ run_fn, generator, load_error = get_generator(
     provider,
 )
 
+# ── AX DSPy quality-gate transport (ported from atomic-graph-opencode) ──
+# Same provider/model/key as run_fn — the gate's validate/refine stages
+# call through this repo's own streaming clients.
+call_llm = make_call_llm(provider, _api_key, model_name)
+
 # ====================== SESSION STATE ======================
 img_state  = st.session_state.setdefault("img",  {"prompt_history": [], "last_prompt": "", "original_input": ""})
 vid_state  = st.session_state.setdefault("vid",  {"prompt_history": [], "last_prompt": "", "original_input": ""})
@@ -926,6 +937,54 @@ else:
 def is_valid_output(text):
     """Guard against None, empty, or suspiciously short output."""
     return text and isinstance(text, str) and len(text.strip()) > 100
+
+# ====================== AX QUALITY GATE (ported from atomic-graph-opencode) ======================
+# Wall-clock budget for the validate → refine loop. Streamlit hosting is
+# latency-sensitive; the gate returns the best-so-far result when the
+# budget expires (score + issues still surface — they double as Grok-ready
+# feedback for the manual refinement round below).
+AX_GATE_TIME_BUDGET_S = 120
+
+
+def _ax_meta(gate):
+    """Compact AX gate metadata for a history entry (additive, optional)."""
+    if gate is None:
+        return None
+    return {
+        "score": score_to_100(gate.score),
+        "attempts": gate.attempts,
+        "passed": gate.passed,
+        "refined": gate.refinements > 0,
+    }
+
+
+def _ax_status_label(base, gate):
+    """Status label with the AX score badge appended."""
+    if gate is None:
+        return base
+    tag = f" · AX {score_to_100(gate.score)}/100"
+    if gate.refinements:
+        tag += f" (self-refined ×{gate.refinements})"
+    if gate.budget_exceeded:
+        tag += " · budget-capped"
+    return base + tag
+
+
+def _render_ax_feedback(gate):
+    """Below-threshold validator issues shown as Grok-ready feedback.
+
+    The AX validator's issues are exactly the 'what to fix' list the manual
+    Grok round needs — surfacing them here makes the manual loop sharper
+    even when the automatic refine pass was budget-capped or skipped."""
+    if gate is None or gate.passed or not gate.issues:
+        return
+    lines = "\n".join(f"- {i}" for i in gate.issues[:8])
+    with st.expander(
+        f"🔍 AX validator: {score_to_100(gate.score)}/100 — below threshold {round(VALIDATION_THRESHOLD * 100)}",
+        expanded=False,
+    ):
+        st.markdown(lines)
+        st.caption("Paste these into Grok feedback to target the next round.")
 
 def render_output(text, is_prd):
     """Render full output — no truncation."""
@@ -1136,15 +1195,38 @@ with col1:
                     else:
                         st.error(f"❌ {err}")
                 else:
+                    # ── AX DSPy quality gate (ported from atomic-graph-opencode) ──
+                    # validate → refine → revalidate loop over the generated
+                    # output. Never breaks generation: any gate failure keeps
+                    # the raw output untouched.
+                    gate = None
+                    try:
+                        status.update(label="🔍 AX quality gate: validating…")
+                        gate = run_quality_gate(
+                            output=output,
+                            original_input=user_input.strip(),
+                            mode=mode,
+                            call_llm=call_llm,
+                            on_log=lambda line: status.update(label=f"🔍 {str(line)[:90]}"),
+                            time_budget_s=AX_GATE_TIME_BUDGET_S,
+                        )
+                        output = gate.output
+                    except Exception as gate_err:
+                        status.update(label=f"⚠️ AX gate skipped: {str(gate_err)[:80]}")
+
                     state["original_input"] = user_input.strip()
                     state["last_prompt"] = output
-                    state["prompt_history"] = [{
+                    _ax_entry = {
                         "version": 1,
                         "prompt": output,
                         "feedback_used": "Initial generation — no Grok feedback yet"
-                    }]
-                    status.update(label="✅ v1 ready", state="complete")
+                    }
+                    if gate is not None:
+                        _ax_entry["ax"] = _ax_meta(gate)
+                    state["prompt_history"] = [_ax_entry]
+                    status.update(label=_ax_status_label("✅ v1 ready", gate), state="complete")
                     render_output(output, is_prd_mode or is_prd_exhaustive)
+                    _render_ax_feedback(gate)
                     with st.expander("📋 Copy v1 for Grok", expanded=True):
                         st.code(output, language=None)
                         copy_button(output, "📋 Copy v1 to Clipboard")
@@ -1297,14 +1379,36 @@ Create the strongest next version. Incorporate all the valuable patterns and ele
                     run_fn, enhanced_input, max_retries=3, status=status
                 )
 
-                state["prompt_history"].append({
+                # ── AX DSPy quality gate (ported from atomic-graph-opencode) ──
+                # Fidelity is measured against the ORIGINAL directions — the
+                # same artifact the validator scored on previous rounds.
+                gate = None
+                try:
+                    status.update(label=f"🔍 AX quality gate: validating v{next_v}…")
+                    gate = run_quality_gate(
+                        output=output,
+                        original_input=state["original_input"],
+                        mode=mode,
+                        call_llm=call_llm,
+                        on_log=lambda line: status.update(label=f"🔍 {str(line)[:90]}"),
+                        time_budget_s=AX_GATE_TIME_BUDGET_S,
+                    )
+                    output = gate.output
+                except Exception as gate_err:
+                    status.update(label=f"⚠️ AX gate skipped: {str(gate_err)[:80]}")
+
+                _ax_entry = {
                     "version": next_v,
                     "prompt": output,
                     "feedback_used": grok_feedback.strip()[:300] + "..."
-                })
+                }
+                if gate is not None:
+                    _ax_entry["ax"] = _ax_meta(gate)
+                state["prompt_history"].append(_ax_entry)
                 state["last_prompt"] = output
-                status.update(label=f"✅ v{next_v} generated", state="complete")
+                status.update(label=_ax_status_label(f"✅ v{next_v} generated", gate), state="complete")
                 render_output(output, is_prd_mode or is_prd_exhaustive)
+                _render_ax_feedback(gate)
                 with st.expander(f"📋 Copy v{next_v} for Grok", expanded=True):
                     st.code(output, language=None)
                     copy_button(output, f"📋 Copy v{next_v} to Clipboard")
@@ -1314,7 +1418,7 @@ Create the strongest next version. Incorporate all the valuable patterns and ele
                     status.update(label=f"❌ v{next_v} failed", state="error")
                     if "401" in err or "AuthenticationError" in err or "User not found" in err:
                         st.error("❌ Invalid or expired API key. Please paste a fresh key in the sidebar and click Apply.")
-                    elif _RATE_LIMIT_RE.search(err):
+                    elif _RATE_LIMIT_TEXT.search(err):
                         st.error(
                             f"❌ Rate limited after 4 attempts. "
                             "Wait a minute and try again, or pick a different model."
@@ -1350,7 +1454,12 @@ if state["prompt_history"]:
             else:
                 st.code(item['prompt'], language=None)
             copy_button(item['prompt'], f"📋 Copy v{item['version']} to Clipboard")
-            st.caption(f"Based on: {item['feedback_used']}")
+            _ax_suffix = ""
+            if item.get("ax"):
+                _ax_suffix = f" · AX {item['ax']['score']}/100"
+                if item["ax"].get("refined"):
+                    _ax_suffix += " (self-refined)"
+            st.caption(f"Based on: {item['feedback_used']}{_ax_suffix}")
 
 mode_label_map = {
     "🎨 Image Prompt": "Image (Flux/SD3/SDXL)",
